@@ -101,7 +101,8 @@ def preprocess_obs(
     if isinstance(observation_space, spaces.Box):
         if is_image_space(observation_space) and normalize_images:
             return obs.float() / 255.0
-        return obs.float()
+        # return obs.float()
+        return obs.half()
 
     elif isinstance(observation_space, spaces.Discrete):
         # One hot encoding and convert to float to avoid errors

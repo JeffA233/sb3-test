@@ -342,7 +342,7 @@ class PPO_Optim(OnPolicyAlgorithm):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                values = self.policy.predict_values(rollout_data.observations)
+                values = self.policy.predict_values(rollout_data.observations.half())
                 values = values.flatten()
 
                 if self.clip_range_vf is None:
@@ -351,11 +351,11 @@ class PPO_Optim(OnPolicyAlgorithm):
                 else:
                     # Clip the different between old and new value
                     # NOTE: this depends on the reward scaling
-                    values_pred = rollout_data.old_values + clamp(
-                        values - rollout_data.old_values, -clip_range_vf, clip_range_vf
+                    values_pred = rollout_data.old_values.half() + clamp(
+                        values - rollout_data.old_values.half(), -clip_range_vf, clip_range_vf
                     )
                 # Value loss using the TD(gae_lambda) target
-                value_loss = mse_loss(rollout_data.returns, values_pred)
+                value_loss = mse_loss(rollout_data.returns.half(), values_pred)
                 value_losses.append(value_loss.item())
 
                 if value_loss.isnan().any():
@@ -483,11 +483,11 @@ class PPO_Optim(OnPolicyAlgorithm):
                 log_prob, entropy = self.policy.get_entr_prob(rollout_data.observations, actions)
                 # values = values.flatten()
                 # Normalize advantage
-                advantages = rollout_data.advantages
+                advantages = rollout_data.advantages.half()
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 # ratio between old and new policy, should be one at the first iteration
-                log_prob_diff = log_prob - rollout_data.old_log_prob
+                log_prob_diff = log_prob - rollout_data.old_log_prob.half()
                 ratio = exp(log_prob_diff)
 
                 # clipped surrogate loss
