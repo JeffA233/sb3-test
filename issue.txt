@@ -1,0 +1,15 @@
+[Optimization] Batching values in on-policy algorithms after collecting rollouts
+--
+Change on_policy_algorithm.py's [collect_rollouts()](https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/common/on_policy_algorithm.py#L129) to batch infer values instead of inferring values while interacting with the environment.
+--
+In my experiments so far, albeit unfortunately with not a ton of testing on different hardware outside of an average game-grade PC (5600X and RTX 3060 on a PCIe Gen4 x16 slot), inferring networks with batches of observations is generally much faster than having to infer each individual observation from the environment. The conclusion that I have loosely come to so far is that it seems as if there is a fair bit of overhead when transferring Tensor objects.
+
+With that in mind, it seems as though you can gain performance from reducing the number of calls to transfer Tensors between the CPU and the GPU as much as possible. I wanted to identify if there were any changes that could be done that were not terribly hard to implement or added too much complexity.
+--
+Batch inferring the values all at once instead of trying to infer the individual values at each environment step appears to deliver a significant performance gain when using CUDA. I have implemented a [fork](https://github.com/JeffA233/stable-baselines3/) with these changes however this fork also includes many other changes that I have tried in order to gain performance. Admittedly, I have not checked if they are robust across many scenarios yet or if all on-policy algorithms are boosted by this but I have thoroughly tested PPO.
+
+If this holds true for all on-policy algorithms then I suspect this gain further shows that CPU to GPU or GPU to CPU transfers have an inherent overhead cost that can cost time. I have not explored off-policy algorithms enough to know if there are similar things to change there as well but from a brief look it did not appear to be the case.
+--
+blank
+--
+blank

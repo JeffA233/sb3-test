@@ -1,0 +1,15 @@
+things that need to change:
+
+-buffer shape needs to be adjusted to be not (n_envs, steps) but rather just (steps)
+---need to test/adjust advantage calculation with this
+---need to check if anything else relies on the n_envs part, things that might be a safety check or whatnot
+
+-need to create a worker that sends data and updates models
+---how to send model data to be updated?
+---needs to send rollout data once an episode is deemed completed which should be based on the terminal observation?
+---custom buffer?
+
+-work out what is the best way to transmit data across network
+---redis for now? since it is "known" software but can be updated or made custom later after testing
+
+-how to deal with reward/etc. logging
