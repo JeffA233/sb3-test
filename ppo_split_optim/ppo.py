@@ -91,6 +91,7 @@ class PPO_Optim(OnPolicyAlgorithm):
         n_steps_per: int = 2048,
         max_epoches_per: int = 100,
         batch_size: int = 64,
+        critic_batch_size: Optional[int] = None,
         minibatch_size: Optional[int] = None,
         n_epochs: int = 10,
         n_epochs_critic: int = 0,
@@ -168,6 +169,10 @@ class PPO_Optim(OnPolicyAlgorithm):
                     f"Info: (n_steps={self.n_steps} and n_envs={self.env.num_envs})"
                 )
         self.batch_size = batch_size
+        if critic_batch_size is not None:
+            self.critic_batch_size = critic_batch_size
+        else:
+            self.critic_batch_size = self.batch_size
         if minibatch_size is not None:
             self.minibatch_size = minibatch_size
             # print(f"**got minibatch size of {minibatch_size}**")
@@ -334,13 +339,13 @@ class PPO_Optim(OnPolicyAlgorithm):
             final_minibatch = True
             # for rollout_data, final_minibatch in \
             #         self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size):
-            for rollout_data in self.rollout_buffer.get(self.batch_size):
+            for rollout_data in self.rollout_buffer.get(self.critic_batch_size):
                 # for i in range(0, self.batch_size, self.minibatch_size):
                 progress_bar.set_description(f"Training, value loss | epoch")
 
                 # Re-sample the noise matrix because the log_std has changed
                 if self.use_sde:
-                    self.policy.reset_noise(self.batch_size)
+                    self.policy.reset_noise(self.critic_batch_size)
 
                 values = self.policy.predict_values(rollout_data.observations)
                 values = values.flatten()
@@ -367,7 +372,7 @@ class PPO_Optim(OnPolicyAlgorithm):
                         # break
                         raise ArithmeticError('Got nan in value loss')
 
-                final_value_loss = (self.vf_coef * value_loss) / (self.batch_size / self.minibatch_size)
+                final_value_loss = (self.vf_coef * value_loss) / (self.critic_batch_size / self.minibatch_size)
 
                 # add PER loss to value loss
                 # if final_minibatch:
@@ -776,6 +781,7 @@ class PPO_Optim(OnPolicyAlgorithm):
         self.logger.record("config/entropy_coef", self.ent_coef)
         self.logger.record("config/n_epochs", self.n_epochs)
         self.logger.record("config/batch_size", self.batch_size)
+        self.logger.record("config/critic_batch_size", self.critic_batch_size)
         self.logger.record("config/minibatch_size", self.minibatch_size)
         self.logger.record("config/gamma", self.gamma)
         self.logger.record("config/gae_lambda", self.gae_lambda)
