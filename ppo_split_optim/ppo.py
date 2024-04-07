@@ -2,6 +2,7 @@
 from typing import Any, Dict, Optional, Type, Union, Iterable
 from warnings import warn
 import tqdm
+import gc
 
 # import torch.nn
 from gym import spaces
@@ -16,6 +17,7 @@ from torch.linalg import vector_norm as th_norm
 # from torch.nn import functional as F
 from torch.nn.functional import mse_loss
 from torch.nn.utils import clip_grad_norm_
+from torch.cuda import empty_cache
 from math import isnan
 
 from stable_baselines3.common.buffers import PrioritizedExperienceReplay
@@ -463,6 +465,9 @@ class PPO_Optim(OnPolicyAlgorithm):
             self._n_updates += 1
             # to replicate functionality of where it was originally
             # approx_kl_divs = []
+            
+        empty_cache()
+        gc.collect()
 
         # train for n_epochs epochs, both policy and critic
         for epoch in range(self.n_epochs):
