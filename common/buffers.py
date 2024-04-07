@@ -456,8 +456,8 @@ class RolloutBuffer(BaseBuffer):
 
         last_gae_lam = 0
         # for step in reversed(range(self.buffer_size)):
-        for step in range(self.pos - 1, -1, -1):
-            if step == self.pos - 1:
+        for step in range(self.buffer_size*self.max_mult - 1, -1, -1):
+            if step == self.buffer_size*self.max_mult - 1:
                 next_non_terminal = 1.0 - dones
                 next_values = last_values
             else:
