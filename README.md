@@ -17,4 +17,4 @@ Test repo for various personal experiments mainly for PPO. Effectively a Franken
   - Separate learning rates can now be applied as well as separate optimizers and optimizer configurations.
   - Note that shared networks will not work as intended when using this as they were not meant to be supported.
 
-- Various other experiments are also in here but 
+- Various other experiments are also in here but they should be deemed WIP and/or functionally not useful. 
