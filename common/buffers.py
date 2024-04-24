@@ -383,19 +383,20 @@ class RolloutBuffer(BaseBuffer):
         self.generator_ready = False
         self.done_indices = None
         self.episodes_done = False
-        self.max_mult = 2
+        self.max_mult = 1.5
+        self.max_steps = int(self.buffer_size * self.max_mult)
         self.reset()
 
     def reset(self) -> None:
 
-        self.observations = np.zeros((self.buffer_size*self.max_mult, self.n_envs) + self.obs_shape, dtype=np.float16)
-        self.actions = np.zeros((self.buffer_size*self.max_mult, self.n_envs, self.action_dim), dtype=np.float32)
-        self.rewards = np.zeros((self.buffer_size*self.max_mult, self.n_envs), dtype=np.float32)
-        self.returns = np.zeros((self.buffer_size*self.max_mult, self.n_envs), dtype=np.float32)
-        self.episode_starts = np.zeros((self.buffer_size*self.max_mult, self.n_envs), dtype=np.float32)
-        self.values = np.zeros((self.buffer_size*self.max_mult, self.n_envs), dtype=np.float32)
-        self.log_probs = np.zeros((self.buffer_size*self.max_mult, self.n_envs), dtype=np.float32)
-        self.advantages = np.zeros((self.buffer_size*self.max_mult, self.n_envs), dtype=np.float32)
+        self.observations = np.zeros((self.max_steps, self.n_envs) + self.obs_shape, dtype=np.float16)
+        self.actions = np.zeros((self.max_steps, self.n_envs, self.action_dim), dtype=np.float32)
+        self.rewards = np.zeros((self.max_steps, self.n_envs), dtype=np.float32)
+        self.returns = np.zeros((self.max_steps, self.n_envs), dtype=np.float32)
+        self.episode_starts = np.zeros((self.max_steps, self.n_envs), dtype=np.float32)
+        self.values = np.zeros((self.max_steps, self.n_envs), dtype=np.float32)
+        self.log_probs = np.zeros((self.max_steps, self.n_envs), dtype=np.float32)
+        self.advantages = np.zeros((self.max_steps, self.n_envs), dtype=np.float32)
         self.generator_ready = False
         self.pos_value = 0
         self.batch_size = 0
@@ -456,8 +457,8 @@ class RolloutBuffer(BaseBuffer):
 
         last_gae_lam = 0
         # for step in reversed(range(self.buffer_size)):
-        for step in range(self.buffer_size*self.max_mult - 1, -1, -1):
-            if step == self.buffer_size*self.max_mult - 1:
+        for step in range(self.max_steps - 1, -1, -1):
+            if step == self.max_steps - 1:
                 next_non_terminal = 1.0 - dones
                 next_values = last_values
             else:
@@ -531,7 +532,7 @@ class RolloutBuffer(BaseBuffer):
             removal_indices = np.asarray(episode_start).nonzero()
             self.done_indices = np.delete(self.done_indices, removal_indices)
 
-        if len(self.done_indices) == 0 or self.pos == self.buffer_size*self.max_mult - 1:
+        if len(self.done_indices) == 0 or self.pos == self.max_steps - 1:
             self.episodes_done = True
 
         self.observations[self.pos][self.done_indices], \
@@ -607,7 +608,7 @@ class RolloutBuffer(BaseBuffer):
         #         thing = 0
         #     self.done_indices = np.delete(self.done_indices, removal_indices)
 
-        if len(self.done_indices) == 0 or self.pos == self.buffer_size*self.max_mult - 1:
+        if len(self.done_indices) == 0 or self.pos == self.max_steps - 1:
             self.episodes_done = True
         else:
             self.observations[self.pos], \
@@ -803,7 +804,7 @@ class RolloutBuffer(BaseBuffer):
     def get_non_rand(self, batch_size: Optional[int] = None) -> Generator[RolloutBufferSamples, None, None]:
         assert self.full, ""
         # indices = np.random.permutation(self.buffer_size * self.n_envs)
-        actual_buffer_size = self.buffer_size*self.max_mult
+        actual_buffer_size = self.max_steps
         indices = np.arange(actual_buffer_size)
 
         self.batch_size = batch_size

@@ -184,7 +184,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         # actions = dist.get_actions()
         # log_probs = dist.log_prob(actions)
 
-        # CUDA graph tests
+        # CUDA graph policy only
         # VERSION 1
         # warmup
         latent_pi = self.policy.get_latent(obs_tensor)
@@ -360,11 +360,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         # faster than computing a value for each obs while collecting rollouts as what original did
         with no_grad():
             for rollout_data in rollout_buffer.get_non_rand(self.batch_size // self.n_envs):
-                # actions: Tensor
-                # actions = rollout_data.actions
-                # if isinstance(self.action_space, Discrete):
-                #     # Convert discrete action from float to long
-                #     actions = rollout_data.actions.long().flatten()
 
                 # Re-sample the noise matrix because the log_std has changed
                 if self.use_sde:
