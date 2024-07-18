@@ -442,6 +442,7 @@ class PPO_Optim(OnPolicyAlgorithm):
                     # th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     if self.max_grad_norm != 0:
                         progress_bar.set_description(f"Training, clipping grads | epoch")
+                        clip_grad_norm_(self.policy.value_net.parameters(), self.max_grad_norm)
                         clip_grad_norm_(self.policy.mlp_extractor.value_net.parameters(), self.max_grad_norm)
                         # utils_cgn(self.policy.mlp_extractor.value_net.parameters(), self.max_grad_norm)
                     progress_bar.set_description(f"Training, optimizer step | epoch")
@@ -708,6 +709,7 @@ class PPO_Optim(OnPolicyAlgorithm):
                     # th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     if self.max_grad_norm != 0:
                         progress_bar.set_description(f"Training, clipping grads | epoch")
+                        clip_grad_norm_(self.policy.action_net.parameters(), self.max_grad_norm)
                         clip_grad_norm_(self.policy.mlp_extractor.policy_net.parameters(), self.max_grad_norm)
                         # utils_cgn(self.policy.mlp_extractor.policy_net.parameters(), self.max_grad_norm)
                     progress_bar.set_description(f"Training, optimizer step | epoch")
