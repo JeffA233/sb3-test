@@ -11,7 +11,7 @@ from numpy import mean as np_mean, zeros, float32, concatenate, ndarray
 from numpy import max as np_max, min as np_min
 from numpy import linalg
 # import torch as th
-from torch import Tensor, device, min, clamp, abs, exp, no_grad, mean, where, concatenate as th_concatenate, var, max
+from torch import Tensor, device, min, clamp, abs, exp, no_grad, mean, where, concatenate as th_concatenate, var, max, dist
 from torch.nn.utils import parameters_to_vector
 from torch.linalg import vector_norm as th_norm
 # from torch.nn import functional as F
@@ -299,6 +299,10 @@ class PPO_Optim(OnPolicyAlgorithm):
         # else:
         #     per_batch = self.batch_size
 
+        precompute_val_extract = parameters_to_vector(self.policy.mlp_extractor.value_net.parameters())
+        precompute_val_pol = parameters_to_vector(self.policy.value_net.parameters())
+        precompute_val = th_concatenate((precompute_val_extract, precompute_val_pol)).cpu()
+
         # train critic only
         for epoch in range(self.n_epochs_critic):
             # Do a complete pass on the rollout buffer
@@ -466,9 +470,17 @@ class PPO_Optim(OnPolicyAlgorithm):
             self._n_updates += 1
             # to replicate functionality of where it was originally
             # approx_kl_divs = []
-            
+        
+        postcompute_val_extract = parameters_to_vector(self.policy.mlp_extractor.value_net.parameters())
+        postcompute_val_pol = parameters_to_vector(self.policy.value_net.parameters())
+        postcompute_val = th_concatenate((postcompute_val_extract, postcompute_val_pol)).cpu()
+
         empty_cache()
         gc.collect()
+
+        precompute_act_extract = parameters_to_vector(self.policy.mlp_extractor.policy_net.parameters())
+        precompute_act_pol = parameters_to_vector(self.policy.action_net.parameters())
+        precompute_act = th_concatenate((precompute_act_extract, precompute_act_pol)).cpu()
 
         # train for n_epochs epochs, both policy and critic
         for epoch in range(self.n_epochs):
@@ -505,7 +517,7 @@ class PPO_Optim(OnPolicyAlgorithm):
                 if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
                     # clamped_off_policy_ratio = clamp(ratio, 0, 2)
                     # clamped_ratio = clamp(ratio, 1 - clip_range, 1 + clip_range)
-                    # scale based on how close to the current policy we are, 0.8 -> 0.8 and 1.2 -> 0.8
+                    # scale based on how close to the current policy we are, 0.8 -> 0.8 and 1.2 -> 1.2
                     # off_policy_penalty = min(2 - clamped_off_policy_ratio, clamped_off_policy_ratio)
                     policy_loss_1 = advantages * ratio
                     policy_loss_2 = advantages * clamp(ratio, 1 - clip_range, 1 + clip_range)
@@ -744,6 +756,13 @@ class PPO_Optim(OnPolicyAlgorithm):
         # self._n_updates += actual_epochs
         explained_var = explained_variance_torch(self.rollout_buffer.values.flatten(),
                                                  self.rollout_buffer.returns.flatten())
+        
+        postcompute_act_extract = parameters_to_vector(self.policy.mlp_extractor.policy_net.parameters())
+        postcompute_act_pol = parameters_to_vector(self.policy.action_net.parameters())
+        postcompute_act = th_concatenate((postcompute_act_extract, postcompute_act_pol)).cpu()
+
+        val_dist = dist(precompute_val, postcompute_val).item()
+        act_dist = dist(precompute_act, postcompute_act).item()
 
         # Logs
         if len(pg_losses) != 0:
@@ -759,6 +778,8 @@ class PPO_Optim(OnPolicyAlgorithm):
         self.logger.record("train/last_kl_div", last_kl_div)  # new
         self.logger.record("train/clip_fraction", np_mean(clip_fractions))
         self.logger.record("train/last_clip_fraction", last_clip_fraction)  # new
+        self.logger.record("train/critic_update_magnitude", val_dist)
+        self.logger.record("train/actor_update_magnitude", act_dist)
         # self.logger.record("train/loss", loss.item())
         # new
         # self.logger.record("train/loss_mean", np_mean(losses))
