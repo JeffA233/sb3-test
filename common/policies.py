@@ -247,7 +247,8 @@ class BaseModel(nn.Module, ABC):
             observation = maybe_transpose(observation, self.observation_space)
 
         else:
-            observation = np.array(observation)
+            # observation = np.array(observation)
+            observation = observation.copy()
 
         if not isinstance(observation, dict):
             # Dict obs need to be handled separately
@@ -285,17 +286,26 @@ class BasePolicy(BaseModel):
         """(bool) Getter for squash_output."""
         return self._squash_output
 
+    # @staticmethod
+    # def init_weights(module: nn.Module, gain: float = 1) -> None:
+    #     """
+    #     Orthogonal initialization (used in PPO and A2C)
+    #     """
+    #     if isinstance(module, (nn.Linear, nn.Conv2d)):
+    #         nn.init.orthogonal_(module.weight, gain=gain)
+    #         if module.bias is not None:
+    #             module.bias.data.fill_(0.0)
+
     @staticmethod
     def init_weights(module: nn.Module, gain: float = 1) -> None:
         """
         Orthogonal initialization (used in PPO and A2C)
         """
-        if isinstance(module, (nn.Linear, nn.Conv2d)):
-            nn.init.orthogonal_(module.weight, gain=gain)
-            # nn.init.kaiming_uniform_(module.weight)
-            # nn.init.xavier_uniform_(module.weight)
-            if module.bias is not None:
-                module.bias.data.fill_(0.0)
+        for p in module.parameters():
+            if p.dim() > 1:
+                nn.init.orthogonal_(p, gain=gain)
+                # if module.bias is not None:
+                #     module.bias.data.fill_(0.0)
 
     # @abstractmethod
     def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
