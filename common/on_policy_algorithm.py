@@ -229,7 +229,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         progress_bar = tqdm.tqdm(desc=f"Doing discarded steps, step count", total=800*self.n_envs,
                                  leave=False, smoothing=0.01)
 
-        discard_steps = 800
+        discard_steps = 800  # disable for now
         # discard some steps to keep on-policy
         while discard_steps < 800:
             if self.use_sde and self.sde_sample_freq > 0 and discard_steps % self.sde_sample_freq == 0:
@@ -245,7 +245,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 # actions = actions_th.cpu().numpy()
                 actions = dist.get_actions().cpu().numpy()
                 # actions: Tensor
-                # actions = actions_th.to(device="cpu", non_blocking=True, copy=False).numpy()
             actions: ndarray
 
             # Rescale and perform action
@@ -295,10 +294,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 # log_probs = log_probs_th.cpu().numpy()
                 actions = dist.get_actions()
                 log_probs = dist.log_prob(actions)
-                log_probs = log_probs.to(device="cpu", non_blocking=True, copy=False)
+                log_probs = log_probs.cpu()
                 actions: Tensor
-                # actions = actions_th.to(device="cpu", non_blocking=True, copy=False).numpy()
-                # log_probs = log_prob_th.to(device="cpu", non_blocking=True, copy=False).numpy()
             # actions: Tensor
             actions = actions.cpu().numpy()
             actions: ndarray
@@ -344,7 +341,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                     with no_grad():
                         terminal_value = self.policy.predict_values(terminal_obs)[0]
                     rewards[idx] += self.gamma * terminal_value
-
+                    # we don't want this to happen right now
+                    print("bootstrapped timeout with value net")
+                    
             rollout_buffer.add_no_val(self._last_obs, actions, rewards, self._last_episode_starts, log_probs)
             # rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, None, None)
             self._last_obs, self._last_episode_starts = new_obs, dones
@@ -359,7 +358,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         # compute values of the rollout and get the final value for calculation,
         # faster than computing a value for each obs while collecting rollouts as what original did
         with no_grad():
-            for rollout_data in rollout_buffer.get_non_rand(self.batch_size // self.n_envs):
+            for rollout_data in rollout_buffer.get_non_rand(self.minibatch_size // self.n_envs):
 
                 # Re-sample the noise matrix because the log_std has changed
                 if self.use_sde:
@@ -374,6 +373,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
         progress_bar.set_description(f"Calculating returns")
         rollout_buffer.compute_returns_and_advantage(last_values=value, dones=dones.astype(int).astype(float))
+
+        callback.update_locals(locals())
 
         callback.on_rollout_end()
         # t2.join()
