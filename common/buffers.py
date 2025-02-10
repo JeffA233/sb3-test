@@ -1,6 +1,6 @@
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Generator, List, Optional, Union
+from typing import Any, Dict, Generator, List, Optional, Union, Tuple
 
 import numpy as np
 import torch as th
@@ -472,14 +472,14 @@ class RolloutBuffer(BaseBuffer):
         self.returns = self.advantages + self.values
 
         # truncate now before we convert to tensors but after we calculate advantages
-        self.observations = self.observations[:self.buffer_size]
-        self.actions = self.actions[:self.buffer_size]
-        self.rewards = self.rewards[:self.buffer_size]
-        self.returns = self.returns[:self.buffer_size]
-        self.episode_starts = self.episode_starts[:self.buffer_size]
-        self.values = self.values[:self.buffer_size]
-        self.log_probs = self.log_probs[:self.buffer_size]
-        self.advantages = self.advantages[:self.buffer_size]
+        self.observations = self.observations[:self.buffer_size].copy()
+        self.actions = self.actions[:self.buffer_size].copy()
+        self.rewards = self.rewards[:self.buffer_size].copy()
+        self.returns = self.returns[:self.buffer_size].copy()
+        self.episode_starts = self.episode_starts[:self.buffer_size].copy()
+        self.values = self.values[:self.buffer_size].copy()
+        self.log_probs = self.log_probs[:self.buffer_size].copy()
+        self.advantages = self.advantages[:self.buffer_size].copy()
 
     def add(
             self,
@@ -616,14 +616,14 @@ class RolloutBuffer(BaseBuffer):
                 self.rewards[self.pos], \
                 self.episode_starts[self.pos], \
                 self.log_probs[self.pos] = \
-                obs, \
-                action, \
-                reward, \
-                episode_start, \
+                obs.copy(), \
+                action.copy(), \
+                reward.copy(), \
+                episode_start.copy(), \
                 log_prob.cpu().numpy()
 
         if self.full:
-            removal_indices = np.asarray(episode_start[self.done_indices]).nonzero()
+            removal_indices = episode_start[self.done_indices].copy().nonzero()
             # if len(removal_indices[0]) != 0:
                 # thing = 0
             self.done_indices = np.delete(self.done_indices, removal_indices)
@@ -671,9 +671,11 @@ class RolloutBuffer(BaseBuffer):
             yield self._get_samples(indices[start_idx: start_idx + batch_size])
             start_idx += batch_size
 
-    def get_minibatch(self, batch_size: Optional[int] = None, minibatch_size: Optional[int] = None) \
-            -> (Generator[RolloutBufferSamples, None, None], bool):
+    def get_minibatch(self, batch_size: Optional[int] = None, minibatch_size: Optional[int] = None, seed: Optional[int] = None) \
+            -> Generator[Tuple[RolloutBufferSamples, bool], None, None]:
         assert self.full, ""
+        if seed:
+            np.random.seed(seed)
         indices = np.random.permutation(self.buffer_size * self.n_envs)
         # Prepare the data
         if not self.generator_ready:
@@ -811,7 +813,7 @@ class RolloutBuffer(BaseBuffer):
         
         # Return everything, don't create minibatches
         if self.batch_size is None or actual_buffer_size < self.batch_size:
-            self.batch_size = self.buffer_size
+            self.batch_size = actual_buffer_size
 
         start_idx = 0
         # curr_index = 0
@@ -825,14 +827,14 @@ class RolloutBuffer(BaseBuffer):
             # curr_index += self.batch_size
             if trunc_batch_bool:
                 break
-            if start_idx + self.batch_size > actual_buffer_size:
-                self.batch_size = actual_buffer_size - start_idx
-                start_idx = self.buffer_size - self.batch_size
+            # if start_idx + self.batch_size > actual_buffer_size:
+            #     self.batch_size = actual_buffer_size - start_idx
+            #     start_idx = self.buffer_size - self.batch_size
+            #     trunc_batch_bool = True
+            # else:
+            start_idx += self.batch_size
+            if start_idx + self.batch_size >= actual_buffer_size:
                 trunc_batch_bool = True
-            else:
-                start_idx += self.batch_size
-                if start_idx + self.batch_size == actual_buffer_size:
-                    trunc_batch_bool = True
 
         self.batch_size = batch_size
         # print(f"last buffer value was: {self.values[-1]}")
