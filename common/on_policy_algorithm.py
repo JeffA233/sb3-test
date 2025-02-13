@@ -15,7 +15,7 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean, safe_max, safe_min
 from stable_baselines3.common.vec_env import VecEnv
 # import torch as th
-from torch import device, no_grad, Tensor, cuda
+from torch import device, no_grad, Tensor, cuda, float32
 
 
 class OnPolicyAlgorithm(BaseAlgorithm):
@@ -169,15 +169,12 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
-        # que = queue.SimpleQueue()
 
-        # def obs_func(queue, obs):
-        #     obs_tensor = obs_as_tensor(obs, self.device)
-        #     queue.put(obs_tensor)
-        #
-        # t2 = threading.Thread(target=obs_func, args=(que, self._last_obs))
-        # t2.start()
-        obs_tensor = obs_as_tensor(self._last_obs, self.device)
+        # experimentation with performance using different dtypes
+        tensor_type = float32
+
+        obs_tensor = obs_as_tensor(self._last_obs, self.device, dtype=tensor_type)
+
         # must set requires_grad to True for VERSION 2
         # obs_tensor.requires_grad = True
         # dist = self.policy.get_distribution(obs_tensor)
@@ -188,6 +185,10 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         # VERSION 1
         # warmup
         latent_pi = self.policy.get_latent(obs_tensor)
+        dist = self.policy._get_action_dist_from_latent(latent_pi)
+        actions_tensor = dist.get_actions()
+        log_probs_ten_cuda = dist.log_prob(actions_tensor)
+        # log_probs_ten = log_probs_ten_cuda
         # actions_th, log_prob_th = self.policy.get_act_and_logprob(obs_tensor)
         # setting device here seems to be important?
         cuda_stream = cuda.Stream(device=self.device)
@@ -195,6 +196,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         with cuda.stream(cuda_stream):
             with no_grad():
                 latent_pi = self.policy.get_latent(obs_tensor)
+                dist = self.policy._get_action_dist_from_latent(latent_pi)
+                actions_tensor = dist.get_actions()
+                log_probs_ten_cuda = dist.log_prob(actions_tensor)
                 # actions_th, log_prob_th = self.policy.get_act_and_logprob(obs_tensor)
         cuda.current_stream().wait_stream(cuda_stream)
 
@@ -203,6 +207,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         with cuda.graph(cuda_gr):
             with no_grad():
                 latent_pi = self.policy.get_latent(obs_tensor)
+                dist = self.policy._get_action_dist_from_latent(latent_pi)
+                actions_tensor = dist.get_actions()
+                log_probs_ten_cuda = dist.log_prob(actions_tensor)
                 # actions_th, log_prob_th = self.policy.get_act_and_logprob(obs_tensor)
 
         # VERSION 2
@@ -240,10 +247,11 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             # actions_th, log_prob_th = policy_func(obs_tensor)
             with no_grad():
                 # dist = self.policy.get_distribution(obs_tensor)
-                dist = self.policy._get_action_dist_from_latent(latent_pi)
+                # dist = self.policy._get_action_dist_from_latent(latent_pi)
                 # cuda_gr_actprob()
                 # actions = actions_th.cpu().numpy()
-                actions = dist.get_actions().cpu().numpy()
+                # actions = dist.get_actions().cpu().numpy()
+                actions = actions_tensor.cpu().numpy()
                 # actions: Tensor
             actions: ndarray
 
@@ -254,7 +262,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             new_obs, rewards, dones, infos = env.step(actions)
 
-            obs_tensor.copy_(obs_as_tensor(new_obs, self.device))
+            obs_tensor.copy_(obs_as_tensor(new_obs, self.device, dtype=tensor_type), non_blocking=True)
 
             # Give access to local variables
             # callback.update_locals(locals())
@@ -288,16 +296,18 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             # actions_th, log_prob_th = policy_func(obs_tensor)
             with no_grad():
                 # dist = self.policy.get_distribution(obs_tensor)
-                dist = self.policy._get_action_dist_from_latent(latent_pi)
+                # dist = self.policy._get_action_dist_from_latent(latent_pi)
                 # cuda_gr_actprob()
                 # actions = actions_th.cpu().numpy()
                 # log_probs = log_probs_th.cpu().numpy()
-                actions = dist.get_actions()
-                log_probs = dist.log_prob(actions)
-                log_probs = log_probs.cpu()
-                actions: Tensor
+                # actions = dist.get_actions()
+                # log_probs = dist.log_prob(actions)
+                # log_probs = log_probs.cpu()
+                log_probs = log_probs_ten_cuda.cpu()
+                # actions: Tensor
             # actions: Tensor
-            actions = actions.cpu().numpy()
+            # actions = actions.cpu().numpy()
+            actions = actions_tensor.cpu().numpy()
             actions: ndarray
 
             # Rescale and perform action
@@ -311,7 +321,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             # t2 = threading.Thread(target=obs_func, args=(que, new_obs))
             # t2.start()
-            obs_tensor.copy_(obs_as_tensor(new_obs, self.device))
+            obs_tensor.copy_(obs_as_tensor(new_obs, self.device, dtype=tensor_type), non_blocking=True)
 
             self.num_timesteps += env.num_envs
             # if isinstance(env.num_envs, ndarray) or isinstance(self.num_timesteps, ndarray):
