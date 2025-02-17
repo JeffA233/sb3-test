@@ -328,6 +328,13 @@ class BaseAlgorithm(ABC):
             "_episode_storage",
             "_logger",
             "_custom_logger",
+            "value_loss_gr",
+            "value_update_gr",
+            "obs_gr_store",
+            "returns_gr_store",
+            "value_loss_cuda_store",
+            "value_pred_gr_store",
+            "attempted_gr",
         ]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
