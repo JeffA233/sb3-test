@@ -14,10 +14,11 @@ from numpy import linalg
 from torch import Tensor, device, min, clamp, abs, exp, no_grad, mean, where, concatenate as th_concatenate, var, max, dist, topk, zeros as th_zeros, tensor, float32 as th_float32, sum as th_sum, isnan as th_isnan
 from torch.nn.utils import parameters_to_vector
 from torch.linalg import vector_norm as th_norm
+import torch as th
 # from torch.nn import functional as F
 from torch.nn.functional import mse_loss
 from torch.nn.utils import clip_grad_norm_
-from torch.cuda import empty_cache, Stream, current_stream, CUDAGraph, graph, stream
+from torch.cuda import empty_cache, Stream, current_stream, CUDAGraph, graph, stream, synchronize
 from math import isnan
 from random import randint
 
@@ -26,7 +27,7 @@ from random import randint
 _tensor_or_tensors = Union[Tensor, Iterable[Tensor]]
 
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
-from stable_baselines3.common.policies import ActorCriticPolicyOptim
+from stable_baselines3.common.policies import ActorCriticPolicyOptim, ACPolicyOptimSpecNorm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance_torch, get_schedule_fn
 # from stable_baselines3.common.torch_utils import utils_cgn
@@ -87,7 +88,7 @@ class PPO_Optim(OnPolicyAlgorithm):
 
     def __init__(
         self,
-        policy: Union[str, Type[ActorCriticPolicyOptim]],
+        policy: Union[str, Type[Union[ActorCriticPolicyOptim, ACPolicyOptimSpecNorm]]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 3e-4,
         n_steps: int = 2048,
@@ -185,7 +186,8 @@ class PPO_Optim(OnPolicyAlgorithm):
             self.minibatch_size = batch_size
             self.minibatch_size_cuda = tensor(self.batch_size, device=self.device, dtype=th_float32)
         assert self.batch_size % self.minibatch_size == 0, "Minibatch size must divide batch size evenly for the CUDA graph implementation"
-        self.batch_div = (self.minibatch_size_cuda / self.critic_batch_size_cuda).to(dtype=th_float32, device=self.device)
+        # self.batch_div = (self.minibatch_size_cuda / self.critic_batch_size_cuda).to(dtype=th_float32, device=self.device)
+        self.batch_div = None
 
         self.n_steps_per = n_steps_per
         self.max_epoches_per = max_epoches_per
@@ -209,7 +211,7 @@ class PPO_Optim(OnPolicyAlgorithm):
 
         self.obs_gr_store = None
         self.returns_gr_store = None
-        self.value_loss_cuda_store = None
+        self.value_loss_cuda_store = th_zeros(1, dtype=th_float32, device="cuda")
         self.value_pred_gr_store = None
 
         self.attempted_gr = False
@@ -269,23 +271,33 @@ class PPO_Optim(OnPolicyAlgorithm):
     def value_loss_and_back(self):
         # values_pred = self.policy.predict_values(self.obs_gr_store)
         # latent_vf = self.policy.mlp_extractor.forward_critic(self.obs_gr_store)
-        latent_vf = self.policy.mlp_extractor.value_net(self.obs_gr_store)
-        # BUG: errors out at this part down below
-        # it doesn't do _slow_forward() here for the module which seems like an error
-        values_pred = self.policy.value_net(latent_vf)
+        # BUG: blows up on the first layer?
+        latent_vf_store = self.policy.mlp_extractor.value_net(self.obs_gr_store)
+        values_pred_store = self.policy.value_net(latent_vf_store)
         #
         # values_pred_flat = values_pred.flatten()
-        values_pred_flat = values_pred.squeeze()
-        value_loss = mse_loss(self.returns_gr_store, values_pred_flat)
-        # value_loss = ((values_pred_flat - self.returns_gr_store) ** 2).mean()
+        values_pred_flat_store = values_pred_store.squeeze()
+        value_loss_store = mse_loss(self.returns_gr_store, values_pred_flat_store)
+        # value_loss_store = ((values_pred_flat_store - self.returns_gr_store) ** 2).mean()
         # final_value_loss = value_loss / (self.critic_batch_size_cuda / self.minibatch_size_cuda)
-        final_value_loss = value_loss * self.batch_div
-        self.value_loss_cuda_store = final_value_loss.detach().clone()
-        final_value_loss.backward()
+        final_value_loss_store = value_loss_store * self.batch_div
+        self.value_loss_cuda_store = final_value_loss_store.detach().clone()
+        final_value_loss_store.backward()
+
+    # def test_change_value_networks(self):
+    #     self.policy.mlp_extractor.value_net = th.nn.Sequential(
+    #         th.nn.Linear(239, 384),
+    #         th.nn.LeakyReLU()
+    #     ).cuda()
+    #     self.policy.value_net = th.nn.Linear(384, 1).cuda()
+    #     params = [param_group for param_group in self.policy.mlp_extractor.value_net.parameters()]
+    #     params.extend(self.policy.value_net.parameters())
+    #     self.policy.value_optimizer = th.optim.Adam(params, lr=1e-4, capturable=True, fused=True)
 
     def update_value_net(self):
         clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
         self.policy.value_optimizer.step()
+        self.policy.value_optimizer.zero_grad(set_to_none=False)
 
     # run stream until final epoch and then capture on final epoch and save to vars
     def handle_graphs_val(self, progress_bar, value_losses):
@@ -294,95 +306,135 @@ class PPO_Optim(OnPolicyAlgorithm):
         np_seed = np_base_seed
 
         # setup buffer to send to cpu for graph reasons
-        self.rollout_buffer.device = "cpu"
+        # self.rollout_buffer.device = "cpu"
 
         cuda_stream = Stream(device=self.device)
         cuda_stream.wait_stream(current_stream())
         # do warm-up 
         with stream(cuda_stream):
-            for epoch in range(self.n_epochs_critic - 1):
-                # Do a complete pass on the rollout buffer
-                progress_bar.set_description(f"Training, rollout buffer get | epoch")
-                # batch count (minibatch count not included/counted)
-                np_seed += 1
+            # for epoch in range(self.n_epochs_critic - 1):
+            #     # Do a complete pass on the rollout buffer
+            #     progress_bar.set_description(f"Training, rollout buffer get | epoch")
+            #     # batch count (minibatch count not included/counted)
+            #     np_seed += 1
 
-                # do critic update calcs
-                for rollout_data, final_minibatch in \
-                        self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size, np_seed):
+            #     # do critic update calcs
+            #     for rollout_data, final_minibatch in \
+            #             self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size, np_seed):
 
-                    progress_bar.set_description(f"Training, value loss | epoch")
+            #         progress_bar.set_description(f"Training, value loss | epoch")
 
-                    if self.obs_gr_store is None:
-                        self.obs_gr_store = rollout_data.observations.cuda()
-                    else:
-                        self.obs_gr_store.copy_(rollout_data.observations)
+            #         if self.obs_gr_store is None:
+            #             self.obs_gr_store = rollout_data.observations.cuda()
+            #         else:
+            #             self.obs_gr_store.copy_(rollout_data.observations)
 
-                    if self.returns_gr_store is None:
-                        self.returns_gr_store = rollout_data.returns.cuda()
-                    else:
-                        self.returns_gr_store.copy_(rollout_data.returns)
-                    self.value_loss_and_back()
-                    value_losses_minibatch.append(self.value_loss_cuda_store.item())
+            #         if self.returns_gr_store is None:
+            #             self.returns_gr_store = rollout_data.returns.cuda()
+            #         else:
+            #             self.returns_gr_store.copy_(rollout_data.returns)
+            #         self.value_loss_and_back()
+            #         value_losses_minibatch.append(self.value_loss_cuda_store.item())
 
-                    # this is where we calculate the actual batch (optimizer step and etc.)
-                    if final_minibatch:
-                        # Clip grad norm
-                        progress_bar.set_description(f"Training, optimizer step | epoch")
-                        self.update_value_net()
-                        self.policy.value_optimizer.zero_grad(set_to_none=True)
+            #         # this is where we calculate the actual batch (optimizer step and etc.)
+            #         if final_minibatch:
+            #             # Clip grad norm
+            #             progress_bar.set_description(f"Training, optimizer step | epoch")
+            #             self.update_value_net()
+            #             self.policy.value_optimizer.zero_grad(set_to_none=True)
 
-                        value_losses.append(np_mean(value_losses_minibatch))
-                        value_losses_minibatch = []
+            #             value_losses.append(np_mean(value_losses_minibatch))
+            #             value_losses_minibatch = []
 
-                progress_bar.update(1)
-                self._n_updates += 1
+            #     progress_bar.update(1)
+            #     self._n_updates += 1
+
+            rollout_data, final_minibatch = next(self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size, np_seed))
+            # if self.obs_gr_store is None:
+            self.obs_gr_store = rollout_data.observations.cuda()
+            # else:
+            #     self.obs_gr_store.copy_(rollout_data.observations)
+
+            # if self.returns_gr_store is None:
+            self.returns_gr_store = rollout_data.returns.cuda()
+            # else:
+            #     self.returns_gr_store.copy_(rollout_data.returns)
+
+            self.value_loss_and_back()
             
         current_stream().wait_stream(cuda_stream)
 
-        # capture graphs
-        for epoch in range(1):
-            # Do a complete pass on the rollout buffer
-            progress_bar.set_description(f"Training, rollout buffer get | epoch")
-            # batch count (minibatch count not included/counted)
-            np_seed += 1
+        self.value_loss_gr = CUDAGraph()
+        self.policy.value_optimizer.zero_grad(set_to_none=True)
+        with graph(self.value_loss_gr):
+            self.value_loss_and_back()
+        self.policy.value_optimizer.zero_grad(set_to_none=False)
 
-            # do critic update calcs
-            for rollout_data, final_minibatch in \
-                    self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size, np_seed):
+        # # capture graphs
+        # for epoch in range(1):
+        #     # Do a complete pass on the rollout buffer
+        #     progress_bar.set_description(f"Training, rollout buffer get | epoch")
+        #     # batch count (minibatch count not included/counted)
+        #     np_seed += 1
 
-                progress_bar.set_description(f"Training, value loss | epoch")
+        #     # do critic update calcs
+        #     for rollout_data, final_minibatch in \
+        #             self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size, np_seed):
 
-                self.obs_gr_store.copy_(rollout_data.observations)
-                self.returns_gr_store.copy_(rollout_data.returns)
-                if final_minibatch:
-                    # BUG: this errors out for some reason
-                    # cuda_stream.wait_stream(current_stream())
-                    # with stream(cuda_stream):
-                    self.value_loss_gr = CUDAGraph()
-                    self.policy.value_optimizer.zero_grad(set_to_none=True)
-                    with graph(self.value_loss_gr):
-                        self.value_loss_and_back()
-                    # current_stream().wait_stream(cuda_stream)
-                    # self.value_loss_and_back()
-                else:
-                    self.value_loss_and_back()
-                # self.value_loss_and_back()
-                value_losses_minibatch.append(self.value_loss_cuda_store.item())
+        #         progress_bar.set_description(f"Training, value loss | epoch")
 
-                # this is where we calculate the actual batch (optimizer step and etc.)
-                if final_minibatch:
-                    progress_bar.set_description(f"Training, optimizer step | epoch")
-                    # cuda_stream.wait_stream(current_stream())
-                    # with stream(cuda_stream):
-                    self.value_update_gr = CUDAGraph()
-                    with graph(self.value_update_gr):
-                        self.update_value_net()
-                        # self.update_value_net()
-                    # current_stream().wait_stream(cuda_stream)
-                    # self.update_value_net()
+        #         # self.obs_gr_store.copy_(rollout_data.observations)
+        #         self.obs_gr_store = rollout_data.observations.detach().clone()
+        #         # self.returns_gr_store.copy_(rollout_data.returns)
+        #         self.returns_gr_store = rollout_data.returns.detach().clone()
+        #         if final_minibatch:
+        #             # might be final minibatch immediately or might have minibatches
+        #             if self.value_loss_gr is None:
+        #                 # self.test_change_value_networks()
+        #                 # BUG: when calling backward() in the loop, there is a legacy stream dependency error
+        #                 self.value_loss_gr = CUDAGraph()
+        #                 self.policy.value_optimizer.zero_grad(set_to_none=True)
+        #                 with graph(self.value_loss_gr):
+        #                     # latent_vf_store = self.policy.mlp_extractor.value_net(self.obs_gr_store)
+        #                     # values_pred_store = self.policy.value_net(latent_vf_store)
+        #                     # #
+        #                     # # values_pred_flat = values_pred.flatten()
+        #                     # values_pred_flat_store = values_pred_store.squeeze()
+        #                     # value_loss_store = mse_loss(self.returns_gr_store, values_pred_flat_store)
+        #                     # # value_loss_store = ((values_pred_flat_store - self.returns_gr_store) ** 2).mean()
+        #                     # # final_value_loss = value_loss / (self.critic_batch_size_cuda / self.minibatch_size_cuda)
+        #                     # self.final_value_loss_store = value_loss_store * self.batch_div
+        #                     # self.value_loss_cuda_store = self.final_value_loss_store.detach().clone()
+        #                     # # final_value_loss_store.backward()
+        #                     # self.final_value_loss_store.backward()
+        #                     self.value_loss_and_back()
+        #                 # self.value_loss_and_back()
+        #             else:
+        #                 self.value_loss_gr.replay()
+        #         else:
+        #             self.value_loss_gr = CUDAGraph()
+        #             self.policy.value_optimizer.zero_grad(set_to_none=True)
+        #             with graph(self.value_loss_gr):
+        #                 self.value_loss_and_back()
+        #         # self.value_loss_and_back()
+        #         value_losses_minibatch.append(self.value_loss_cuda_store.item())
 
-            progress_bar.update(1)
-            self._n_updates += 1
+        #         # this is where we calculate the actual batch (optimizer step and etc.)
+        #         if final_minibatch:
+        #             progress_bar.set_description(f"Training, optimizer step | epoch")
+        #             # cuda_stream.wait_stream(current_stream())
+        #             # with stream(cuda_stream):
+        #             self.value_update_gr = CUDAGraph()
+        #             with graph(self.value_update_gr):
+        #                 self.update_value_net()
+        #                 # self.update_value_net()
+        #             # current_stream().wait_stream(cuda_stream)
+        #             # self.update_value_net()
+        #             value_losses.append(np_mean(value_losses_minibatch))
+        #             value_losses_minibatch = []
+
+        #     progress_bar.update(1)
+        #     self._n_updates += 1
         
         self.rollout_buffer.device = self.device
         self.attempted_gr = True
@@ -400,6 +452,10 @@ class PPO_Optim(OnPolicyAlgorithm):
         # Optional: clip range for the value function
         if self.clip_range_vf is not None:
             clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+
+        # self.minibatch_size_cuda = tensor(self.batch_size, device=self.device, dtype=th_float32)
+        # self.critic_batch_size_cuda = tensor(self.batch_size, device=self.device, dtype=th_float32)
+        # self.batch_div = (self.minibatch_size_cuda / self.critic_batch_size_cuda).to(dtype=th_float32, device="cuda")
 
         entropy_losses = []
         pg_losses, value_losses = [], []
@@ -506,46 +562,48 @@ class PPO_Optim(OnPolicyAlgorithm):
         
         # if not self.attempted_gr:
         #     self.handle_graphs_val(progress_bar, value_losses)
-        # else:
-        #     # train critic only
-        #     for epoch in range(self.n_epochs_critic):
-        #         # Do a complete pass on the rollout buffer
-        #         progress_bar.set_description(f"Training, rollout buffer get | epoch")
-        #         # batch count (minibatch count not included/counted)
-        #         np_seed += 1
+        # # else:
+        # # train critic only
+        # for epoch in range(self.n_epochs_critic):
+        #     # Do a complete pass on the rollout buffer
+        #     progress_bar.set_description(f"Training, rollout buffer get | epoch")
+        #     # batch count (minibatch count not included/counted)
+        #     np_seed += 1
 
-        #         # do critic update calcs
-        #         for rollout_data, final_minibatch in \
-        #                 self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size, np_seed):
-        #             progress_bar.set_description(f"Training, value loss | epoch")
+        #     # do critic update calcs
+        #     for rollout_data, final_minibatch in \
+        #             self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size, np_seed):
+        #         progress_bar.set_description(f"Training, value loss | epoch")
 
-        #             self.obs_gr_store.copy_(rollout_data.observations)
-        #             self.returns_gr_store.copy_(rollout_data.returns)
-        #             if self.value_loss_gr:
-        #                 self.value_loss_gr.replay()
+        #         self.obs_gr_store.copy_(rollout_data.observations)
+        #         self.returns_gr_store.copy_(rollout_data.returns)
+        #         if self.value_loss_gr:
+        #             self.value_loss_gr.replay()
+        #             # BUG: this currently causes a "backwards through the graph a second time" error
+        #             # self.final_value_loss_store.backward()
+        #         else:
+        #             self.value_loss_and_back()
+        #         value_losses_minibatch.append(self.value_loss_cuda_store.item())
+
+        #         # Optimization step
+        #         # progress_bar.set_description(f"Training, backwards | epoch")
+
+        #         # this is where we calculate the actual batch (optimizer step and etc.)
+        #         if final_minibatch:
+        #             progress_bar.set_description(f"Training, optimizer step | epoch")
+        #             if self.value_update_gr:
+        #                 self.value_update_gr.replay()
         #             else:
-        #                 self.value_loss_and_back()
-        #             value_losses_minibatch.append(self.value_loss_cuda_store.item())
+        #                 self.update_value_net()
 
-        #             # Optimization step
-        #             # progress_bar.set_description(f"Training, backwards | epoch")
+        #             # Clip grad norm
+        #             # progress_bar.set_description(f"Training, clipping grads | epoch")
 
-        #             # this is where we calculate the actual batch (optimizer step and etc.)
-        #             if final_minibatch:
-        #                 progress_bar.set_description(f"Training, optimizer step | epoch")
-        #                 if self.value_update_gr:
-        #                     self.value_update_gr.replay()
-        #                 else:
-        #                     self.update_value_net
+        #             value_losses.append(np_mean(value_losses_minibatch))
+        #             value_losses_minibatch = []
 
-        #                 # Clip grad norm
-        #                 # progress_bar.set_description(f"Training, clipping grads | epoch")
-
-        #                 value_losses.append(np_mean(value_losses_minibatch))
-        #                 value_losses_minibatch = []
-
-        #         progress_bar.update(1)
-        #         self._n_updates += 1
+        #     progress_bar.update(1)
+        #     self._n_updates += 1
         
         postcompute_val_extract = parameters_to_vector(self.policy.mlp_extractor.value_net.parameters())
         postcompute_val_pol = parameters_to_vector(self.policy.value_net.parameters())

@@ -750,8 +750,8 @@ class BaseAlgorithm(ABC):
         model._setup_model()
 
         # put state_dicts back in place
-        from stable_baselines3.ppo_split_optim.ppo import ActorCriticPolicyOptim
-        if model.policy_class == ActorCriticPolicyOptim:
+        from stable_baselines3.ppo_split_optim.ppo import ActorCriticPolicyOptim, ACPolicyOptimSpecNorm
+        if model.policy_class == ActorCriticPolicyOptim or data['policy_class'] == ACPolicyOptimSpecNorm:
             model.set_parameters(params, exact_match=True, device=device,
                                  torch_save_params_only={'policy', 'policy.value_optimizer', 'policy.policy_optimizer'})
         else:
@@ -793,7 +793,9 @@ class BaseAlgorithm(ABC):
         for name in state_dicts_names:
             attr = recursive_getattr(self, name)
             # Retrieve state dict
-            params[name] = attr.state_dict()
+            st_dict = attr.state_dict()
+            if st_dict:
+                params[name] = st_dict
         return params
 
     def save(
@@ -823,8 +825,8 @@ class BaseAlgorithm(ABC):
 
         state_dicts_names, torch_variable_names = self._get_torch_save_params()
         # dumb way to get around the problem of 'policy.optimizer' only instead of policy_optimizer and value_optimizer
-        from stable_baselines3.ppo_split_optim.ppo import ActorCriticPolicyOptim
-        if data['policy_class'] == ActorCriticPolicyOptim:
+        from stable_baselines3.ppo_split_optim.ppo import ActorCriticPolicyOptim, ACPolicyOptimSpecNorm
+        if data['policy_class'] == ActorCriticPolicyOptim or data['policy_class'] == ACPolicyOptimSpecNorm:
             state_dicts_names = ['policy', 'policy.value_optimizer', 'policy.policy_optimizer']
 
         all_pytorch_variables = state_dicts_names + torch_variable_names
