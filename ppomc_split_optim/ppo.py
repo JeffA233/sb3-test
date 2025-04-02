@@ -26,14 +26,14 @@ from random import randint
 
 _tensor_or_tensors = Union[Tensor, Iterable[Tensor]]
 
-from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
+from stable_baselines3.common.on_policy_algorithm_mc import OnPolicyAlgorithmMC
 from stable_baselines3.common.policies import ActorCriticPolicyOptim, ACPolicyOptimSpecNorm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance_torch, get_schedule_fn
 # from stable_baselines3.common.torch_utils import utils_cgn
 
 
-class PPO_Optim(OnPolicyAlgorithm):
+class PPOMC_Optim(OnPolicyAlgorithmMC):
     """
     Proximal Policy Optimization algorithm (PPO) (clip version)
 
@@ -110,8 +110,6 @@ class PPO_Optim(OnPolicyAlgorithm):
         max_pol_loss: float = -0.0,
         use_sde: bool = False,
         sde_sample_freq: int = -1,
-        weight_clipping: bool = False,
-        weight_clip_k: float = 1.0,
         target_kl: Optional[float] = None,
         tensorboard_log: Optional[str] = None,
         create_eval_env: bool = False,
@@ -122,7 +120,7 @@ class PPO_Optim(OnPolicyAlgorithm):
         _init_setup_model: bool = True,
     ):
 
-        super(PPO_Optim, self).__init__(
+        super(PPOMC_Optim, self).__init__(
             policy,
             env,
             learning_rate=learning_rate,
@@ -201,8 +199,6 @@ class PPO_Optim(OnPolicyAlgorithm):
         self.target_kl = target_kl
         self.last_params_store = None
         self.max_pol_loss = max_pol_loss
-        self.weight_clipping = weight_clipping
-        self.weight_clip_k = weight_clip_k
 
         if _init_setup_model:
             self._setup_model()
@@ -221,7 +217,7 @@ class PPO_Optim(OnPolicyAlgorithm):
         self.attempted_gr = False
 
     def _setup_model(self) -> None:
-        super(PPO_Optim, self)._setup_model()
+        super(PPOMC_Optim, self)._setup_model()
 
         # Initialize schedules for policy/value clipping
         self.clip_range = get_schedule_fn(self.clip_range)
@@ -462,7 +458,8 @@ class PPO_Optim(OnPolicyAlgorithm):
         # self.batch_div = (self.minibatch_size_cuda / self.critic_batch_size_cuda).to(dtype=th_float32, device="cuda")
 
         entropy_losses = []
-        pg_losses, value_losses = [], []
+        # pg_losses, value_losses = [], []
+        pg_losses = []
         clip_fractions = []
         approx_kl_divs = []
         
@@ -473,92 +470,92 @@ class PPO_Optim(OnPolicyAlgorithm):
 
         continue_training = True
 
-        progress_bar = tqdm.tqdm(desc=f"Training", total=self.n_epochs+self.n_epochs_critic, leave=False,
+        progress_bar = tqdm.tqdm(desc=f"Training", total=self.n_epochs, leave=False,
                                  smoothing=0.01)
 
-        precompute_val_extract = parameters_to_vector(self.policy.mlp_extractor.value_net.parameters())
-        precompute_val_pol = parameters_to_vector(self.policy.value_net.parameters())
-        precompute_val = th_concatenate((precompute_val_extract, precompute_val_pol)).cpu()
+        # precompute_val_extract = parameters_to_vector(self.policy.mlp_extractor.value_net.parameters())
+        # precompute_val_pol = parameters_to_vector(self.policy.value_net.parameters())
+        # precompute_val = th_concatenate((precompute_val_extract, precompute_val_pol)).cpu()
 
-        value_losses_minibatch = []
+        # value_losses_minibatch = []
         np_base_seed = randint(0, 100)
         np_seed = np_base_seed
 
-        # train critic only
-        for epoch in range(self.n_epochs_critic):
-            # Do a complete pass on the rollout buffer
-            progress_bar.set_description(f"Training, rollout buffer get | epoch")
-            # batch count (minibatch count not included/counted)
-            batch = 0
-            np_seed += 1
+        # # train critic only
+        # for epoch in range(self.n_epochs_critic):
+        #     # Do a complete pass on the rollout buffer
+        #     progress_bar.set_description(f"Training, rollout buffer get | epoch")
+        #     # batch count (minibatch count not included/counted)
+        #     batch = 0
+        #     np_seed += 1
 
-            # do critic update calcs
-            for rollout_data, final_minibatch in \
-                    self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size, np_seed):
-                progress_bar.set_description(f"Training, value loss | epoch")
+        #     # do critic update calcs
+        #     for rollout_data, final_minibatch in \
+        #             self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size, np_seed):
+        #         progress_bar.set_description(f"Training, value loss | epoch")
 
-                # Re-sample the noise matrix because the log_std has changed
-                if self.use_sde:
-                    self.policy.reset_noise(self.critic_batch_size)
+        #         # Re-sample the noise matrix because the log_std has changed
+        #         if self.use_sde:
+        #             self.policy.reset_noise(self.critic_batch_size)
 
-                values = self.policy.predict_values(rollout_data.observations)
-                values = values.flatten()
+        #         values = self.policy.predict_values(rollout_data.observations)
+        #         values = values.flatten()
 
-                if self.clip_range_vf is None:
-                    # No clipping
-                    values_pred = values
-                else:
-                    # Clip the different between old and new value
-                    # NOTE: this depends on the reward scaling
-                    values_pred = rollout_data.old_values + clamp(
-                        values - rollout_data.old_values, -clip_range_vf, clip_range_vf
-                    )
-                # Value loss using the TD(gae_lambda) target
-                value_loss = mse_loss(rollout_data.returns, values_pred)
-                # value_losses.append(value_loss.item())
-                value_losses_minibatch.append(value_loss.item())
+        #         if self.clip_range_vf is None:
+        #             # No clipping
+        #             values_pred = values
+        #         else:
+        #             # Clip the different between old and new value
+        #             # NOTE: this depends on the reward scaling
+        #             values_pred = rollout_data.old_values + clamp(
+        #                 values - rollout_data.old_values, -clip_range_vf, clip_range_vf
+        #             )
+        #         # Value loss using the TD(gae_lambda) target
+        #         value_loss = mse_loss(rollout_data.returns, values_pred)
+        #         # value_losses.append(value_loss.item())
+        #         value_losses_minibatch.append(value_loss.item())
 
-                if value_loss.isnan().any():
-                    if self.policy.value_optimizer.param_groups[0]['lr'] != 0:
-                        del values
-                        self.policy.policy_optimizer.zero_grad(set_to_none=True)
-                        self.policy.value_optimizer.zero_grad(set_to_none=True)
-                        print(f"got value loss NaN")
-                        # break
-                        raise ArithmeticError('Got nan in value loss')
+        #         if value_loss.isnan().any():
+        #             if self.policy.value_optimizer.param_groups[0]['lr'] != 0:
+        #                 del values
+        #                 self.policy.policy_optimizer.zero_grad(set_to_none=True)
+        #                 self.policy.value_optimizer.zero_grad(set_to_none=True)
+        #                 print(f"got value loss NaN")
+        #                 # break
+        #                 raise ArithmeticError('Got nan in value loss')
 
-                final_value_loss = (self.vf_coef * value_loss) / (self.critic_batch_size / self.minibatch_size)
+        #         final_value_loss = (self.vf_coef * value_loss) / (self.critic_batch_size / self.minibatch_size)
 
-                # Optimization step
-                progress_bar.set_description(f"Training, backwards | epoch")
+        #         # Optimization step
+        #         progress_bar.set_description(f"Training, backwards | epoch")
 
-                final_value_loss.backward()
+        #         final_value_loss.backward()
 
 
-                # this is where we calculate the actual batch (optimizer step and etc.)
-                if final_minibatch:
-                    batch += 1
-                    if self.max_grad_norm != 0:
-                        progress_bar.set_description(f"Training, clipping grads | epoch")
-                        clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                    progress_bar.set_description(f"Training, optimizer step | epoch")
+        #         # this is where we calculate the actual batch (optimizer step and etc.)
+        #         if final_minibatch:
+        #             batch += 1
+        #             if self.max_grad_norm != 0:
+        #                 progress_bar.set_description(f"Training, clipping grads | epoch")
+        #                 clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+        #             progress_bar.set_description(f"Training, optimizer step | epoch")
 
-                    self.policy.value_optimizer.step()
-                    self.policy.value_optimizer.zero_grad(set_to_none=True)
+        #             self.policy.value_optimizer.step()
+        #             self.policy.value_optimizer.zero_grad(set_to_none=True)
 
-                    value_losses.append(np_mean(value_losses_minibatch))
-                    value_losses_minibatch = []
+        #             value_losses.append(np_mean(value_losses_minibatch))
+        #             value_losses_minibatch = []
 
-                # del rollout_data
+        #         # del rollout_data
 
-            if not continue_training:
-                break
+        #     if not continue_training:
+        #         break
 
-            progress_bar.update(1)
-            # actual_epochs += 1
-            self._n_updates += 1
-            # to replicate functionality of where it was originally
-            # approx_kl_divs = []
+        #     progress_bar.update(1)
+        #     # actual_epochs += 1
+        #     self._n_updates += 1
+        #     # to replicate functionality of where it was originally
+        #     # approx_kl_divs = []
 
         # # list to get CUDA Graphs working
         # # - removal of "if final_minibatch" or use two graphs with the split at the if statement (more likely easier)
@@ -609,12 +606,12 @@ class PPO_Optim(OnPolicyAlgorithm):
         #     progress_bar.update(1)
         #     self._n_updates += 1
         
-        postcompute_val_extract = parameters_to_vector(self.policy.mlp_extractor.value_net.parameters())
-        postcompute_val_pol = parameters_to_vector(self.policy.value_net.parameters())
-        postcompute_val = th_concatenate((postcompute_val_extract, postcompute_val_pol)).cpu()
+        # postcompute_val_extract = parameters_to_vector(self.policy.mlp_extractor.value_net.parameters())
+        # postcompute_val_pol = parameters_to_vector(self.policy.value_net.parameters())
+        # postcompute_val = th_concatenate((postcompute_val_extract, postcompute_val_pol)).cpu()
 
-        empty_cache()
-        gc.collect()
+        # empty_cache()
+        # gc.collect()
 
         precompute_act_extract = parameters_to_vector(self.policy.mlp_extractor.policy_net.parameters())
         precompute_act_pol = parameters_to_vector(self.policy.action_net.parameters())
@@ -794,20 +791,14 @@ class PPO_Optim(OnPolicyAlgorithm):
         except:
             pass
 
-        # weight clip section
-        if self.weight_clipping:
-            for param in self.policy.parameters():
-                # max_for_clamp = self.weight_clip_k*(param*param).mean().sqrt().item()
-                param.data.clamp_(-self.weight_clip_k, self.weight_clip_k)
-
-        explained_var = explained_variance_torch(self.rollout_buffer.values.flatten(),
-                                                 self.rollout_buffer.returns.flatten())
+        # explained_var = explained_variance_torch(self.rollout_buffer.values.flatten(),
+        #                                          self.rollout_buffer.returns.flatten())
         
         postcompute_act_extract = parameters_to_vector(self.policy.mlp_extractor.policy_net.parameters())
         postcompute_act_pol = parameters_to_vector(self.policy.action_net.parameters())
         postcompute_act = th_concatenate((postcompute_act_extract, postcompute_act_pol)).cpu()
 
-        val_dist = dist(precompute_val, postcompute_val).item()
+        # val_dist = dist(precompute_val, postcompute_val).item()
         act_dist = dist(precompute_act, postcompute_act).item()
 
         # Logs
@@ -821,17 +812,17 @@ class PPO_Optim(OnPolicyAlgorithm):
             self.logger.record("train/last_policy_grad_loss", pg_losses[-1])
         else:
             self.logger.record("train/policy_gradient_loss", 0)
-        self.logger.record("train/value_loss", np_mean(value_losses))
-        self.logger.record("train/first_value_loss", value_losses[0])
-        self.logger.record("train/last_value_loss", value_losses[-1])
+        # self.logger.record("train/value_loss", np_mean(value_losses))
+        # self.logger.record("train/first_value_loss", value_losses[0])
+        # self.logger.record("train/last_value_loss", value_losses[-1])
         self.logger.record("train/approx_kl", np_mean(approx_kl_divs))
         self.logger.record("train/last_kl_div", last_kl_div)  # new
         self.logger.record("train/clip_fraction", np_mean(clip_fractions))
         self.logger.record("train/last_clip_fraction", last_clip_fraction)  # new
-        self.logger.record("train/critic_update_magnitude", val_dist)
+        # self.logger.record("train/critic_update_magnitude", val_dist)
         self.logger.record("train/actor_update_magnitude", act_dist)
-        self.logger.record("train/returns_var", var(self.rollout_buffer.returns.flatten()).item())
-        self.logger.record("train/explained_variance", explained_var.item())
+        # self.logger.record("train/returns_var", var(self.rollout_buffer.returns.flatten()).item())
+        # self.logger.record("train/explained_variance", explained_var.item())
         if hasattr(self.policy, "log_std"):
             self.logger.record("train/std", exp(self.policy.log_std).mean().item())
 
@@ -844,14 +835,14 @@ class PPO_Optim(OnPolicyAlgorithm):
         self.logger.record("config/entropy_coef", self.ent_coef)
         self.logger.record("config/n_epochs", self.n_epochs)
         self.logger.record("config/batch_size", self.batch_size)
-        self.logger.record("config/critic_batch_size", self.critic_batch_size)
+        # self.logger.record("config/critic_batch_size", self.critic_batch_size)
         self.logger.record("config/minibatch_size", self.minibatch_size)
         self.logger.record("config/gamma", self.gamma)
-        self.logger.record("config/gae_lambda", self.gae_lambda)
+        # self.logger.record("config/gae_lambda", self.gae_lambda)
         self.logger.record("config/buffer_size", self.n_steps*self.n_envs)
         self.logger.record("config/max_grad_norm", self.max_grad_norm)
         self.logger.record("config/policy_lr", self.policy.policy_optimizer.param_groups[0]['lr'])
-        self.logger.record("config/value_lr", self.policy.value_optimizer.param_groups[0]['lr'])
+        # self.logger.record("config/value_lr", self.policy.value_optimizer.param_groups[0]['lr'])
         #
 
     def learn(
@@ -865,9 +856,9 @@ class PPO_Optim(OnPolicyAlgorithm):
         tb_log_name: str = "PPO",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
-    ) -> "OnPolicyAlgorithm":
+    ) -> "OnPolicyAlgorithmMC":
 
-        return super(PPO_Optim, self).learn(
+        return super(PPOMC_Optim, self).learn(
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,

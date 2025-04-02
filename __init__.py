@@ -8,6 +8,7 @@ from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
 from stable_baselines3.ppo import PPO
 from stable_baselines3.per_ppo.ppo import PER_PPO
 from stable_baselines3.ppo_split_optim.ppo import PPO_Optim
+from stable_baselines3.ppomc_split_optim.ppo import PPOMC_Optim
 from stable_baselines3.sac import SAC
 from stable_baselines3.td3 import TD3
 
