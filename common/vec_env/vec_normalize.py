@@ -202,15 +202,17 @@ class VecNormalize(VecEnvWrapper):
         Calling this method does not update statistics.
         """
         # Avoid modifying by reference the original object
-        obs_ = deepcopy(obs)
+        # obs_ = deepcopy(obs)
         if self.norm_obs:
+            obs_ = deepcopy(obs)
             if isinstance(obs, dict) and isinstance(self.obs_rms, dict):
                 # Only normalize the specified keys
                 for key in self.norm_obs_keys:
                     obs_[key] = self._normalize_obs(obs[key], self.obs_rms[key]).astype(np.float32)
             else:
                 obs_ = self._normalize_obs(obs, self.obs_rms).astype(np.float32)
-        return obs_
+            return obs_
+        return obs
 
     def normalize_reward(self, reward: np.ndarray) -> np.ndarray:
         """
