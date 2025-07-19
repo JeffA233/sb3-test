@@ -422,19 +422,22 @@ class MlpExtractorNormSpec(nn.Module):
         last_layer_dim_vf = last_layer_dim_shared
 
         # Build the non-shared part of the network
-        if len(policy_only_layers) != 0:
-            policy_net.append(nn.LayerNorm(last_layer_dim_pi))
-        if len(value_only_layers) != 0:
-            value_net.append(nn.LayerNorm(last_layer_dim_vf))
-
+        # if len(policy_only_layers) != 0:
+        #     policy_net.append(nn.LayerNorm(last_layer_dim_pi))
+        # if len(value_only_layers) != 0:
+        #     value_net.append(nn.LayerNorm(last_layer_dim_vf))
+        
+        policy_len = len(policy_only_layers)
+        value_len = len(value_only_layers)
         for i, (pi_layer_size, vf_layer_size) in enumerate(zip_longest(policy_only_layers, value_only_layers)):
             if pi_layer_size is not None:
                 assert isinstance(pi_layer_size, int), "Error: net_arch[-1]['pi'] must only contain integers."
                 # policy_net.append(nn.Linear(last_layer_dim_pi, pi_layer_size))
                 # if i != 0 and i != len(policy_only_layers) - 1:
-                if i != 0:
+                if i != 0 or i != policy_len-1:
                     # policy_net.append(nn.utils.parametrizations.spectral_norm(nn.Linear(last_layer_dim_pi, pi_layer_size)))
                     policy_net.append(nn.Linear(last_layer_dim_pi, pi_layer_size))
+                    policy_net.append(nn.LayerNorm(pi_layer_size))
                 else:
                     policy_net.append(nn.Linear(last_layer_dim_pi, pi_layer_size))
                 policy_net.append(activation_fn())
@@ -444,9 +447,10 @@ class MlpExtractorNormSpec(nn.Module):
                 assert isinstance(vf_layer_size, int), "Error: net_arch[-1]['vf'] must only contain integers."
                 # value_net.append(nn.Linear(last_layer_dim_vf, vf_layer_size))
                 # if i != 0 and i != len(value_only_layers) - 1:
-                if i != 0:
+                if i != 0 or i != value_len-1:
                     # value_net.append(nn.utils.parametrizations.spectral_norm(nn.Linear(last_layer_dim_vf, vf_layer_size)))
                     value_net.append(nn.Linear(last_layer_dim_vf, vf_layer_size))
+                    value_net.append(nn.LayerNorm(vf_layer_size))
                 else:
                     value_net.append(nn.Linear(last_layer_dim_vf, vf_layer_size))
                 value_net.append(activation_fn())
