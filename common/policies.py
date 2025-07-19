@@ -1636,6 +1636,12 @@ class ACPolicyOptimSpecNorm(BasePolicy):
         self.value_net = nn.Linear(self.mlp_extractor.latent_dim_vf, 1).to(device_str)
         self.action_net = self.action_net.to(device_str)
         self.mlp_extractor = self.mlp_extractor.to(device_str)
+        
+        for i, layer in enumerate(self.mlp_extractor.value_net):
+            if i > 1:
+                if isinstance(layer, nn.Linear):
+                    nn.utils.parametrizations.spectral_norm(layer)
+                    
         # Init weights: use orthogonal initialization
         # with small initial weight for the output
         if self.ortho_init:
@@ -1698,10 +1704,10 @@ class ACPolicyOptimSpecNorm(BasePolicy):
         #         if isinstance(layer, nn.Linear):
         #             nn.utils.parametrizations.spectral_norm(layer)
 
-        for i, layer in enumerate(self.mlp_extractor.value_net):
-            if i > 1:
-                if isinstance(layer, nn.Linear):
-                    nn.utils.parametrizations.spectral_norm(layer)
+        # for i, layer in enumerate(self.mlp_extractor.value_net):
+        #     if i > 1:
+        #         if isinstance(layer, nn.Linear):
+        #             nn.utils.parametrizations.spectral_norm(layer)
 
     # @th.compile(backend="TorchInductor")  # not supported on Windows as of writing (2.0.1)
     @th.jit.ignore
