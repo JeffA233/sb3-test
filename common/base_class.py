@@ -480,6 +480,12 @@ class BaseAlgorithm(ABC):
             if maybe_is_success is not None and dones[idx]:
                 self.ep_success_buffer.append(maybe_is_success)
 
+    def get_current_lr(self) -> Union[float, Tuple[float, float]]:
+        if isinstance(self.lr_schedule, list):
+            return (self.lr_schedule[0](self._current_progress_remaining), self.lr_schedule[1](self._current_progress_remaining))
+        else:
+            return self.lr_schedule(self._current_progress_remaining)
+
     def get_env(self) -> Optional[VecEnv]:
         """
         Returns the current environment (can be None if not defined).
