@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, Type, Union, Iterable
 from warnings import warn
 import tqdm
 import gc
+import copy
 
 # import torch.nn
 from gym import spaces
@@ -11,7 +12,7 @@ from numpy import mean as np_mean, zeros, float32, concatenate, ndarray
 from numpy import max as np_max, min as np_min
 from numpy import linalg
 # import torch as th
-from torch import Tensor, device, min, clamp, abs, exp, no_grad, mean, where, concatenate as th_concatenate, var, max, dist, topk, zeros as th_zeros, tensor, float32 as th_float32, sum as th_sum, isnan as th_isnan
+from torch import Tensor, device, minimum, clamp, abs, exp, no_grad, mean, where, concatenate as th_concatenate, var, max, dist, topk, zeros as th_zeros, tensor, float32 as th_float32, sum as th_sum, isnan as th_isnan
 from torch.nn.utils import parameters_to_vector
 from torch.linalg import vector_norm as th_norm
 import torch as th
@@ -29,7 +30,7 @@ _tensor_or_tensors = Union[Tensor, Iterable[Tensor]]
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.policies import ActorCriticPolicyOptim, ACPolicyOptimSpecNorm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import explained_variance_torch, get_schedule_fn
+from stable_baselines3.common.utils import explained_variance_torch, get_schedule_fn, update_learning_rate
 # from stable_baselines3.common.torch_utils import utils_cgn
 
 
@@ -527,7 +528,7 @@ class PPO_Optim(OnPolicyAlgorithm):
                         # break
                         raise ArithmeticError('Got nan in value loss')
 
-                final_value_loss = (self.vf_coef * value_loss) / (self.critic_batch_size / self.minibatch_size)
+                final_value_loss = (self.vf_coef * value_loss) * (self.minibatch_size / self.critic_batch_size)
 
                 # Optimization step
                 progress_bar.set_description(f"Training, backwards | epoch")
@@ -624,50 +625,83 @@ class PPO_Optim(OnPolicyAlgorithm):
         clip_fractions_minibatch = []
         approx_kl_divs_minibatch = []
         entropy_losses_minibatch = []
+        
+        max_advantage = None
+        mean_advantage = None
+        min_advantage = None
+        max_ratio = None
+        mean_ratio = None
+        min_ratio = None
+        policy_loss = None
+
+        progress_bar.set_description("Training, rollout buffer normalize advantages")
+        self.rollout_buffer.normalize_advantages()
 
         # train for n_epochs epochs, both policy and critic
         if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
-            np_seed = np_base_seed
-            for epoch in range(self.n_epochs):
-                # Do a complete pass on the rollout buffer
-                progress_bar.set_description(f"Training, rollout buffer get | epoch")
-                # batch count (minibatch count not included/counted)
-                batch = 0
-                np_seed += 1
-                for rollout_data, final_minibatch in \
-                        self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size, np_seed):
-                # for rollout_data in self.rollout_buffer.get(self.batch_size):
-                    progress_bar.set_description(f"Training, PPO calc | epoch")
-                    actions = rollout_data.actions
-                    if isinstance(self.action_space, spaces.Discrete):
-                        # Convert discrete action from float to long
-                        # actions = rollout_data.actions.long().flatten()
-                        actions = actions.int().flatten()
+            val_lr, act_lr = self.get_current_lr()
+            policy_optimizer_backup_cpu = copy.deepcopy(self.policy.policy_optimizer.state_dict())
+            policy_backup_cpu = copy.deepcopy(self.policy.mlp_extractor.policy_net.state_dict())
+            successful_loop = False
+            num_loops = 0
+            while not successful_loop:
+                np_seed = np_base_seed
+                progress_bar.reset()
+                progress_bar.update(self.n_epochs_critic)
+                for epoch in range(self.n_epochs):
+                    # Do a complete pass on the rollout buffer
+                    progress_bar.set_description(f"Training, rollout buffer get | epoch")
+                    # batch count (minibatch count not included/counted)
+                    batch = 0
+                    np_seed += 1
+                    for rollout_data, final_minibatch in \
+                            self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size, np_seed):
+                    # for rollout_data in self.rollout_buffer.get(self.batch_size):
+                        progress_bar.set_description(f"Training, PPO calc | epoch")
+                        actions = rollout_data.actions
+                        if isinstance(self.action_space, spaces.Discrete):
+                            # Convert discrete action from float to long
+                            # actions = rollout_data.actions.long().flatten()
+                            actions = actions.int().flatten()
 
-                    # Re-sample the noise matrix because the log_std has changed
-                    if self.use_sde:
-                        self.policy.reset_noise(self.batch_size)
+                        # Re-sample the noise matrix because the log_std has changed
+                        if self.use_sde:
+                            self.policy.reset_noise(self.batch_size)
 
-                    log_prob, entropy = self.policy.get_entr_prob(rollout_data.observations, actions)
-                    # Normalize advantage
-                    advantages = rollout_data.advantages
-                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                        log_prob, entropy = self.policy.get_entr_prob(rollout_data.observations, actions)
+                        # Normalize advantage
+                        advantages = rollout_data.advantages
+                        
+                        # adv_abs = advantages.abs()
+                        # adv_sgn = advantages.sign()
+                        # pow_adv_abs = adv_abs.pow(0.5)
+                        # advantages = adv_sgn * pow_adv_abs
+                        
+                        # MOVED: we now do this in the rollout buffer first to get around dealing with minibatches
+                        advantages_mean_th = advantages.mean()
+                        # advantages = (advantages - advantages_mean_th) / (advantages.std() + 1e-8)
 
-                    # ratio between old and new policy, should be one at the first iteration
-                    log_prob_diff = log_prob - rollout_data.old_log_prob
-                    ratio = exp(log_prob_diff)
+                        # ratio between old and new policy, should be one at the first iteration
+                        log_prob_diff = log_prob - rollout_data.old_log_prob
+                        ratio = exp(log_prob_diff)
 
-                    # DEBUG
-                    # biggest_adv = topk(advantages, 10)
-                    # smallest_adv = topk(advantages, 10, largest=False)
-                    # biggest_ratio = topk(ratio, 10)
-                    # smallest_ratio = topk(ratio, 10, largest=False)
+                        # DEBUG
+                        # biggest_adv = topk(advantages, 10)
+                        # smallest_adv = topk(advantages, 10, largest=False)
+                        # biggest_ratio = topk(ratio, 10)
+                        # smallest_ratio = topk(ratio, 10, largest=False)
+                        max_advantage = advantages.max().item()
+                        mean_advantage = advantages_mean_th.item()
+                        min_advantage = advantages.min().item()
+                        max_ratio = ratio.max().item()
+                        mean_ratio = ratio.mean().item()
+                        min_ratio = ratio.min().item()
 
-                    # clipped surrogate loss
-                    if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
+                        # clipped surrogate loss
+                        # if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
                         policy_loss_1 = advantages * ratio
                         policy_loss_2 = advantages * clamp(ratio, 1 - clip_range, 1 + clip_range)
-                        policy_loss = -min(policy_loss_1, policy_loss_2).mean()
+                        policy_loss = -minimum(policy_loss_1, policy_loss_2).mean()
                         
                         # New logging position
                         pg_losses_minibatch.append(policy_loss.item())
@@ -675,7 +709,7 @@ class PPO_Optim(OnPolicyAlgorithm):
                         # simple kl spike prevention for now
                         if policy_loss > self.max_pol_loss and epoch > 0 and last_clip_fraction > 0.07:
                             # dbg
-                            # pol_loss = -min(policy_loss_1, policy_loss_2)
+                            # pol_loss = -minimum(policy_loss_1, policy_loss_2)
                             # vals, indxs = max(pol_loss, 0)
                             # obs = rollout_data.observations[indxs].cpu().numpy()
                             #
@@ -709,29 +743,29 @@ class PPO_Optim(OnPolicyAlgorithm):
                             print(f"got policy loss NaN")
                             raise ArithmeticError('Got nan in policy loss')
 
-                    clip_fraction = mean((abs(ratio - 1) > clip_range).float()).item()
-                    
-                    clip_fractions_minibatch.append(clip_fraction)
-                    last_clip_fraction = clip_fraction
-                    
-                    # Calculate approximate form of reverse KL Divergence for early stopping
-                    # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
-                    # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
-                    # and Schulman blog: http://joschu.net/blog/kl-approx.html
-                    with no_grad():
-                        approx_kl_div = mean((ratio - 1) - log_prob_diff).cpu().numpy()
-                        approx_kl_div_scalar = approx_kl_div.item()
-                        approx_kl_divs_minibatch.append(approx_kl_div_scalar)
-                        last_kl_div = approx_kl_div_scalar
-                    
-                    # check if clip fraction was too high
-                    if self.max_clip is not None and last_clip_fraction > self.max_clip:
-                        print(f"hit clip_fraction > max_clip: {last_clip_fraction} on epoch: {actual_epochs} and batch: {batch}")
-                        continue_training = False
-                        break
+                        clip_fraction = mean((abs(ratio - 1) > clip_range).float()).item()
+                        
+                        clip_fractions_minibatch.append(clip_fraction)
+                        last_clip_fraction = clip_fraction
+                        
+                        # Calculate approximate form of reverse KL Divergence for early stopping
+                        # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
+                        # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
+                        # and Schulman blog: http://joschu.net/blog/kl-approx.html
+                        with no_grad():
+                            approx_kl_div = mean((ratio - 1) - log_prob_diff).cpu().numpy()
+                            approx_kl_div_scalar = approx_kl_div.item()
+                            approx_kl_divs_minibatch.append(approx_kl_div_scalar)
+                            last_kl_div = approx_kl_div_scalar
+                        
+                        # check if clip fraction was too high
+                        if self.max_clip is not None and last_clip_fraction > self.max_clip:
+                            print(f"hit clip_fraction > max_clip: {last_clip_fraction} on epoch: {actual_epochs} and batch: {batch}")
+                            continue_training = False
+                            break
 
-                    # Entropy loss favor exploration
-                    if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
+                        # Entropy loss favor exploration
+                        # if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
                         if entropy is None:
                             # Approximate entropy when no analytical form
                             entropy_loss = -mean(-log_prob)
@@ -741,64 +775,96 @@ class PPO_Optim(OnPolicyAlgorithm):
                         # entropy_losses.append(entropy_loss.item())
                         entropy_losses_minibatch.append(entropy_loss.item())
 
-                    if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
+                        # if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
                         final_policy_loss = (policy_loss + self.ent_coef * entropy_loss) \
-                                      / (self.batch_size / self.minibatch_size)
-                    
-                    if isnan(last_kl_div):
-                        raise ArithmeticError('Got nan in approx_kl_div')
+                                    * (self.minibatch_size / self.batch_size)
+                        
+                        if isnan(last_kl_div):
+                            raise ArithmeticError('Got nan in approx_kl_div')
 
-                    if self.target_kl is not None and last_kl_div > 1.5 * self.target_kl:
-                        continue_training = False
-                        if self.verbose >= 1:
-                            print(f"Early stopping at epoch {epoch}, batch {batch} due to reaching max kl: {last_kl_div:.2f}")
-                        break
+                        if self.target_kl is not None and last_kl_div > 1.5 * self.target_kl:
+                            continue_training = False
+                            if self.verbose >= 1:
+                                print(f"Early stopping at epoch {epoch}, batch {batch} due to reaching max kl: {last_kl_div:.2f}")
+                            break
 
-                    # Optimization step
-                    progress_bar.set_description(f"Training, backwards | epoch")
-                    if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
-                        final_policy_loss.backward()
-                    
-                    # this is where we calculate the actual batch (optimizer step and etc.)
-                    if final_minibatch:
-                        batch += 1
-                        # Clip grad norm
-                        if self.max_grad_norm != 0:
-                            progress_bar.set_description(f"Training, clipping grads | epoch")
-                            clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                        progress_bar.set_description(f"Training, optimizer step | epoch")
+                        # Optimization step
+                        progress_bar.set_description(f"Training, backwards | epoch")
                         if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
+                            final_policy_loss.backward()
+                        
+                        # this is where we calculate the actual batch (optimizer step and etc.)
+                        if final_minibatch:
+                            batch += 1
+                            # Clip grad norm
+                            if self.max_grad_norm != 0:
+                                progress_bar.set_description(f"Training, clipping grads | epoch")
+                                clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                            progress_bar.set_description(f"Training, optimizer step | epoch")
+                            # if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
                             self.policy.policy_optimizer.step()
 
-                        if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
+                            # if self.policy.policy_optimizer.param_groups[0]['lr'] != 0:
                             self.policy.policy_optimizer.zero_grad(set_to_none=True)
 
-                        pg_losses.append(np_mean(pg_losses_minibatch))
-                        clip_fractions.append(np_mean(clip_fractions_minibatch))
-                        approx_kl_divs.append(np_mean(approx_kl_divs_minibatch))
-                        entropy_losses.append(np_mean(entropy_losses_minibatch))
+                            pg_loss_mean_batch = np_mean(pg_losses_minibatch)
+                            # print(f"pg_loss_mean_batch: {pg_loss_mean_batch}")
+                            pg_losses.append(pg_loss_mean_batch)
+                            clip_fractions.append(np_mean(clip_fractions_minibatch))
+                            approx_kl_divs.append(np_mean(approx_kl_divs_minibatch))
+                            entropy_losses.append(np_mean(entropy_losses_minibatch))
 
-                        pg_losses_minibatch = []
-                        clip_fractions_minibatch = []
-                        approx_kl_divs_minibatch = []
-                        entropy_losses_minibatch = []
+                            pg_losses_minibatch = []
+                            clip_fractions_minibatch = []
+                            approx_kl_divs_minibatch = []
+                            entropy_losses_minibatch = []
 
-                if not continue_training:
-                    break
+                            # Load previous weights for a retry with a lower learning rate
+                            if pg_loss_mean_batch > 0.0 and num_loops < 3 and epoch > 0:
+                                self.policy.policy_optimizer.load_state_dict(policy_optimizer_backup_cpu)
+                                self.policy.mlp_extractor.policy_net.load_state_dict(policy_backup_cpu)
 
-                progress_bar.update(1)
-                self._n_updates += 1
+                                act_lr = act_lr*0.5
+                                print(f"Got policy loss > 0.0: {pg_loss_mean_batch}, halving lr to {act_lr}")
+                                update_learning_rate(self.policy.policy_optimizer, act_lr)
+                                num_loops += 1
+
+                                pg_losses = []
+                                clip_fractions = []
+                                approx_kl_divs = []
+                                entropy_losses = []
+                                successful_loop = False
+                                break
+                            else:
+                                successful_loop = True
+                    
+                    if not successful_loop:
+                        break
+
+                    if not continue_training:
+                        break
+
+                    if successful_loop:
+                        progress_bar.update(1)
+                        self._n_updates += 1
+                
+                # if not successful_loop and continue_training:
+                #     break
 
         try:
             progress_bar.close()
         except:
             pass
 
+        # reset lr
+        val_lr, act_lr = self.get_current_lr()
+        update_learning_rate(self.policy.policy_optimizer, act_lr)
+
         # weight clip section
-        if self.weight_clipping:
-            for param in self.policy.parameters():
-                # max_for_clamp = self.weight_clip_k*(param*param).mean().sqrt().item()
-                param.data.clamp_(-self.weight_clip_k, self.weight_clip_k)
+        # if self.weight_clipping:
+        #     for param in self.policy.parameters():
+        #         # max_for_clamp = self.weight_clip_k*(param*param).mean().sqrt().item()
+        #         param.data.clamp_(-self.weight_clip_k, self.weight_clip_k)
 
         explained_var = explained_variance_torch(self.rollout_buffer.values.flatten(),
                                                  self.rollout_buffer.returns.flatten())
@@ -819,6 +885,12 @@ class PPO_Optim(OnPolicyAlgorithm):
             self.logger.record("train/policy_gradient_loss", np_mean(pg_losses))
             self.logger.record("train/first_policy_grad_loss", pg_losses[0])
             self.logger.record("train/last_policy_grad_loss", pg_losses[-1])
+            self.logger.record("train_extra/max_advantage", max_advantage)
+            self.logger.record("train_extra/mean_advantage", mean_advantage)
+            self.logger.record("train_extra/min_advantage", min_advantage)
+            self.logger.record("train_extra/max_ratio", max_ratio)
+            self.logger.record("train_extra/mean_ratio", mean_ratio)
+            self.logger.record("train_extra/min_ratio", min_ratio)
         else:
             self.logger.record("train/policy_gradient_loss", 0)
         self.logger.record("train/value_loss", np_mean(value_losses))
