@@ -481,6 +481,9 @@ class RolloutBuffer(BaseBuffer):
         self.log_probs = self.log_probs[:self.buffer_size].copy()
         self.advantages = self.advantages[:self.buffer_size].copy()
 
+    def normalize_advantages(self)  -> None:
+        self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
+
     def add(
             self,
             obs: np.ndarray,
