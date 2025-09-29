@@ -12,7 +12,7 @@ from numpy import mean as np_mean, zeros, float32, concatenate, ndarray
 from numpy import max as np_max, min as np_min
 from numpy import linalg
 # import torch as th
-from torch import Tensor, device, minimum, clamp, abs, exp, no_grad, mean, where, concatenate as th_concatenate, var, max, dist, topk, zeros as th_zeros, tensor, float32 as th_float32, sum as th_sum, isnan as th_isnan
+from torch import Tensor, device, minimum, clamp, abs, exp, no_grad, mean, where, concatenate as th_concatenate, var, max, min as th_min, dist, topk, zeros as th_zeros, tensor, float32 as th_float32, sum as th_sum, isnan as th_isnan
 from torch.nn.utils import parameters_to_vector
 from torch.linalg import vector_norm as th_norm
 import torch as th
@@ -188,7 +188,7 @@ class PPO_Optim(OnPolicyAlgorithm):
         else:
             self.minibatch_size = batch_size
             self.minibatch_size_cuda = tensor(self.batch_size, device=self.device, dtype=th_float32)
-        assert self.batch_size % self.minibatch_size == 0, "Minibatch size must divide batch size evenly for the CUDA graph implementation"
+        # assert self.batch_size % self.minibatch_size == 0, "Minibatch size must divide batch size evenly for the CUDA graph implementation"
         # self.batch_div = (self.minibatch_size_cuda / self.critic_batch_size_cuda).to(dtype=th_float32, device=self.device)
         self.batch_div = None
 
@@ -654,6 +654,7 @@ class PPO_Optim(OnPolicyAlgorithm):
                     # batch count (minibatch count not included/counted)
                     batch = 0
                     np_seed += 1
+                    # FIXME: needs same changes/fixes from SPO with advantages 
                     for rollout_data, final_minibatch in \
                             self.rollout_buffer.get_minibatch(self.batch_size, self.minibatch_size, np_seed):
                     # for rollout_data in self.rollout_buffer.get(self.batch_size):
@@ -844,9 +845,8 @@ class PPO_Optim(OnPolicyAlgorithm):
                     if not continue_training:
                         break
 
-                    if successful_loop:
-                        progress_bar.update(1)
-                        self._n_updates += 1
+                    progress_bar.update(1)
+                    self._n_updates += 1
                 
                 # if not successful_loop and continue_training:
                 #     break
