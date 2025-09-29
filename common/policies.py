@@ -302,11 +302,14 @@ class BasePolicy(BaseModel):
         """
         Orthogonal initialization (used in PPO and A2C)
         """
-        for p in module.parameters():
-            if p.dim() > 1:
-                nn.init.orthogonal_(p, gain=gain)
-                # if module.bias is not None:
-                #     module.bias.data.fill_(0.0)
+        # for p in module.parameters():
+        #     if p.dim() > 1:
+        #         nn.init.orthogonal_(p, gain=gain)
+        #         if p.bias is not None:
+        #             p.bias.data.fill_(0.0)
+        if isinstance(module, (nn.Linear, nn.Conv2d)):
+            nn.init.orthogonal_(module.weight, gain=gain)
+            nn.init.zeros_(module.bias)
 
     # @abstractmethod
     def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
@@ -1592,20 +1595,12 @@ class ACPolicyOptimSpecNorm(BasePolicy):
         # Note: If net_arch is None and some features extractor is used,
         #       net_arch here is an empty list and mlp_extractor does not
         #       really contain any layers (acts like an identity module).
-        if symlog:
-            self.mlp_extractor = MlpExtractorSymLog(
-                self.features_dim,
-                net_arch=self.net_arch,
-                activation_fn=self.activation_fn,
-                device=self.device,
-            )
-        else:
-            self.mlp_extractor = MlpExtractorNormSpec(
-                self.features_dim,
-                net_arch=self.net_arch,
-                activation_fn=self.activation_fn,
-                device=self.device,
-            )
+        self.mlp_extractor = MlpExtractorNormSpec(
+            self.features_dim,
+            net_arch=self.net_arch,
+            activation_fn=self.activation_fn,
+            device=self.device,
+        )
 
     @th.jit.ignore
     def _build(self, lr_schedule: Schedule, symlog: bool, device_str: str) -> None:
@@ -1637,10 +1632,10 @@ class ACPolicyOptimSpecNorm(BasePolicy):
         self.action_net = self.action_net.to(device_str)
         self.mlp_extractor = self.mlp_extractor.to(device_str)
         
-        for i, layer in enumerate(self.mlp_extractor.value_net):
-            if i > 1:
-                if isinstance(layer, nn.Linear):
-                    nn.utils.parametrizations.spectral_norm(layer)
+        # for i, layer in enumerate(self.mlp_extractor.value_net):
+        #     if i > 1:
+        #         if isinstance(layer, nn.Linear):
+        #             nn.utils.parametrizations.spectral_norm(layer)
                     
         # Init weights: use orthogonal initialization
         # with small initial weight for the output
@@ -1652,8 +1647,12 @@ class ACPolicyOptimSpecNorm(BasePolicy):
             action_net_init = 0.01
             value_net_init = 1
             module_gains = {
-                self.features_extractor: np.sqrt(2 / (1 + 0.01 ** 2)),
-                self.mlp_extractor: np.sqrt(2 / (1 + 0.01 ** 2)),
+                # self.features_extractor: np.sqrt(2 / (1 + 0.01 ** 2)),
+                # self.mlp_extractor: np.sqrt(2 / (1 + 0.01 ** 2)),
+                self.features_extractor: np.sqrt(2),
+                # self.mlp_extractor: np.sqrt(2),
+                self.mlp_extractor.policy_net: np.sqrt(2),
+                self.mlp_extractor.value_net: np.sqrt(2),
                 # self.action_net: 0.01,
                 # self.value_net: 1,
                 # recommended gain for LeakyReLU
