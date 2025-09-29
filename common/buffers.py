@@ -481,8 +481,19 @@ class RolloutBuffer(BaseBuffer):
         self.log_probs = self.log_probs[:self.buffer_size].copy()
         self.advantages = self.advantages[:self.buffer_size].copy()
 
+        # self.observations = np.resize(self.observations, self.buffer_size)
+        # self.actions = np.resize(self.actions, self.buffer_size)
+        # self.rewards = np.resize(self.rewards, self.buffer_size)
+        # self.returns = np.resize(self.returns, self.buffer_size)
+        # self.episode_starts = np.resize(self.episode_starts, self.buffer_size)
+        # self.values = np.resize(self.values, self.buffer_size)
+        # self.log_probs = np.resize(self.log_probs, self.buffer_size)
+        # self.advantages = np.resize(self.advantages, self.buffer_size)
+
     def normalize_advantages(self)  -> None:
-        self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
+        adv_mean = self.advantages.mean()
+        adv_std = self.advantages.std()
+        self.advantages = (self.advantages - adv_mean) / (adv_std + 1e-8)
 
     def add(
             self,
@@ -701,8 +712,8 @@ class RolloutBuffer(BaseBuffer):
             self.generator_ready = True
 
         # Return everything, don't create minibatches
-        if batch_size is None:
-            batch_size = self.buffer_size * self.n_envs
+        # if batch_size is None:
+        #     batch_size = self.buffer_size * self.n_envs
         if minibatch_size is None:
             minibatch_size = batch_size
         if batch_size is None or self.buffer_size * self.n_envs < batch_size:
@@ -721,28 +732,32 @@ class RolloutBuffer(BaseBuffer):
         # writing in other languages which require it.
         while True:
             # print(f"batch {batch_dbg_val} {start_idx_batch}")
+            batch_adv_calc_end = start_idx_batch + batch_size
+            batch_adv_calc_idxs = indices[start_idx_batch:batch_adv_calc_end]
+            advs = self.advantages[batch_adv_calc_idxs].flatten()
+            advs_mean = advs.mean()
+            advs_std = advs.std()
             while True:
                 # print(f"minibatch {mini_dbg_val} {start_idx}")
-                if not minibatch_trunc_or_done:
-                    first_idx = start_idx_batch + start_idx
-                    end_idx = start_idx_batch + start_idx + minibatch_size
-                    idxs = indices[first_idx:end_idx]
-                else:
-                    first_idx = start_idx_batch + start_idx
-                    # end_idx = start_idx_batch + start_idx + minibatch_size_trunc
-                    end_idx = start_idx_batch + start_idx + minibatch_size
-                    idxs = indices[first_idx:end_idx]
+                # if not minibatch_trunc_or_done:
+                #     first_idx = start_idx_batch + start_idx
+                #     end_idx = start_idx_batch + start_idx + minibatch_size
+                #     idxs = indices[first_idx:end_idx]
+                # else:
+                first_idx = start_idx_batch + start_idx
+                # end_idx = start_idx_batch + start_idx + minibatch_size_trunc
+                end_idx = first_idx + minibatch_size
+                idxs = indices[first_idx:end_idx]
                 # dbg and error checking
                 if len(idxs) < 1 or len(idxs) > minibatch_size:
-                    start_idx_print = start_idx_batch + start_idx
-                    end_idx_print = start_idx_batch + start_idx + minibatch_size
                     index_array_len = len(idxs)
-                    print(f"got irregular index array: {start_idx_print}, {end_idx_print}, {index_array_len}, "
+                    print(f"got irregular index array: {first_idx}, {end_idx}, {index_array_len}, "
                           f"{minibatch_trunc_or_done}, {trunc_or_done_batch_bool}, check minibatch func in buffer")
                 # -
                 if self.batch_size == minibatch_size:
                     minibatch_trunc_or_done = True
-                yield self._get_samples(idxs), minibatch_trunc_or_done
+
+                yield self._get_samples(idxs), minibatch_trunc_or_done, advs_mean, advs_std
                 if minibatch_trunc_or_done:
                     break
                 # we need to do 2* because we're going to do
@@ -827,7 +842,7 @@ class RolloutBuffer(BaseBuffer):
         # while curr_index < self.buffer_size:
         while True:
             self.pos_value = indices[start_idx: start_idx + self.batch_size]
-            yield self._get_obs_and_acts(self.pos_value)
+            yield self._get_obs_only(self.pos_value)
             # check if batch is too big for rest of buffer and modify batch size if necessary
             # curr_index += self.batch_size
             if trunc_batch_bool:
@@ -841,23 +856,24 @@ class RolloutBuffer(BaseBuffer):
             if start_idx + self.batch_size >= actual_buffer_size:
                 trunc_batch_bool = True
 
-        self.batch_size = batch_size
+        # self.batch_size = batch_size
         # print(f"last buffer value was: {self.values[-1]}")
 
-    def _get_obs_and_acts(self, batch_inds: np.ndarray) -> RolloutBufferSamples:
+    def _get_obs_only(self, batch_inds: np.ndarray) -> RolloutBufferSamples:
         self.observations: np.ndarray
         # print(f"buffer obs shape: {self.observations[batch_inds].shape}")  # (num envs, batch size, obs size)
         # print(f"swapax obs shape: {self.swap_and_flatten(self.observations[batch_inds]).shape}")
         # print(f"pos_value in _get_obs_and_acts: {batch_inds}")
-        data = (
-            self.swap_and_flatten(self.observations[batch_inds]),
-            self.actions[batch_inds],
-            self.values[batch_inds].flatten(),
-            self.log_probs[batch_inds].flatten(),
-            self.advantages[batch_inds].flatten(),
-            self.returns[batch_inds].flatten(),
-        )
-        return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
+        # data = (
+        #     self.swap_and_flatten(self.observations[batch_inds]),
+        #     self.actions[batch_inds],
+        #     self.values[batch_inds].flatten(),
+        #     self.log_probs[batch_inds].flatten(),
+        #     self.advantages[batch_inds].flatten(),
+        #     self.returns[batch_inds].flatten(),
+        # )
+        # return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
+        return RolloutBufferSamples(self.to_torch(self.swap_and_flatten(self.observations[batch_inds])), None, None, None, None, None)
 
     def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> RolloutBufferSamples:
         data = (
