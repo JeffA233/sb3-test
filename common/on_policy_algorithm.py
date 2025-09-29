@@ -382,7 +382,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             value = self.policy.predict_values(obs_tensor)
 
         progress_bar.set_description(f"Calculating returns")
-        rollout_buffer.compute_returns_and_advantage(last_values=value, dones=dones.astype(int).astype(float))
+        rollout_buffer.compute_returns_and_advantage(last_values=value, dones=self._last_episode_starts.astype(int).astype(float))
 
         callback.update_locals(locals())
 
